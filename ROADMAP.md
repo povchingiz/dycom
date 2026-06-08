@@ -132,6 +132,31 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 - [ ] Surface distance prediction vs reality
 - [ ] Target: <2mm mean error (literature standard)
 
+## Phase 6 — ML Acceleration (future, after Phase 5 validated)
+
+**Goal:** Replace slow FEBio simulation with fast learned model. Physics pipeline becomes training data generator.
+
+**Realistic path:**
+
+1. Download **ToothFairy2** (480 scans, 42 classes) → fine-tune TotalSegmentator on dental CBCT specifically
+2. Run improved segmenter on 100+ cases → build FEA meshes at scale
+3. Simulate procedures with parameter sweeps → synthetic before/after pairs (e.g. 10 patients × 50 param variations = 500 pairs)
+4. Train deformation prediction model (nnUNet or lightweight CNN) on synthetic pairs
+5. Validate ML model against HaN-Seg soft tissue ground truth (not just against simulator — avoids circular validation)
+
+**Key datasets:**
+
+| Dataset | Scans | Labels | Purpose |
+|---|---|---|---|
+| ToothFairy2 | 480 | 42 classes: teeth, mandible, maxilla, sinuses | Main segmentation training |
+| HaN-Seg | 42 | Mandible + soft tissue OARs + paired MR | Soft tissue model + validation |
+| PDDCA (TCIA) | 40 | Mandible (public domain) | Mandible fine-tune |
+| CTooth+ | 168 (22 labeled) | Tooth instances | Semi-supervised teeth |
+
+**Critical gap:** none have paired before/after scans → physics pipeline fills this gap by generating synthetic pairs.
+
+**Sim-to-real risk:** FEBio uses assumed material props (±40% person variance). ML learns simulator biases. Mitigate: final validation must use real post-op scans, not synthetic.
+
 ---
 
 ## Removed from old plan

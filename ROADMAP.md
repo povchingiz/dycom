@@ -52,14 +52,15 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 **Input:** `Baytemirova_S.zip` (raw patient archive, possibly DICOM series)
 **Output:** anonymized NIfTI volume + repo skeleton + path decision
 
-- [ ] Unpack `Baytemirova_S.zip`
-- [ ] Verify format (DICOM/NIfTI), FOV (full face?), voxel size
-- [ ] **Critical:** does CBCT capture soft tissue? If no → need external face scan
-- [ ] DICOM tag anonymization (PatientName, BirthDate)
-- [ ] Init repo: git + DVC + Docker skeleton
-- [ ] **Decision gate:** pure-CBCT vs CBCT+face-scan fusion
-  - **Criteria:** if FOV crops soft tissue above lip OR skin HU absent (-700 to -200 range missing) → fusion path
-  - **Criteria:** if full face visible and skin segmentable → pure-CBCT path
+- [x] Unpack `Baytemirova_S.zip`
+- [x] Verify format (DICOM/NIfTI), FOV (full face?), voxel size
+  - Planmeca ProMax CBCT; single DCM (137MB); 409×409×409 @ 0.4mm = 163mm cube; HEAD; 16-bit
+- [x] **Critical:** does CBCT capture soft tissue? If no → need external face scan
+  - **YES** — skin HU (-500 to -200) = 10M voxels present; soft tissue 30% of volume
+- [x] DICOM tag anonymization (PatientName, BirthDate) → `data/anon/patient_anon.dcm`
+- [x] Init repo: git + DVC + Docker skeleton
+- [x] **Decision gate:** pure-CBCT vs CBCT+face-scan fusion
+  - **RESULT: pure-CBCT path** — skin segmentable from scan
 
 ## Phase 1 — Segmentation (week 1)
 

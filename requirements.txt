@@ -1,0 +1,6 @@
+pydicom==2.4.4
+numpy==1.26.4
+scipy==1.13.0
+SimpleITK==2.3.1
+open3d==0.18.0
+trimesh==4.3.2

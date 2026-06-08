@@ -1,0 +1,5 @@
+outs:
+- md5: cc61d827096745473a09ec7fcb9ce407
+  size: 137188704
+  hash: md5
+  path: patient_anon.dcm

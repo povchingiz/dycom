@@ -1,0 +1,22 @@
+# Large data binaries - tracked by DVC (not the .dvc pointer files)
+patient_raw/
+data/raw/*.dcm
+data/anon/*.dcm
+data/**/*.nii
+data/**/*.nii.gz
+data/**/*.stl
+data/**/*.vtk
+data/**/*.vtu
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+
+# Secrets
+.env
+*.key

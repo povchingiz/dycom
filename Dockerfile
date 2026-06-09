@@ -12,6 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY scripts/ ./scripts/
+COPY server/ ./server/
 
-# Run individual scripts manually — see README.md for usage
-CMD ["bash"]
+# Expose port for web demo
+EXPOSE 8000
+
+# Default: run web demo server
+# Override with: docker run -e DEMO_PASSWORD=yourpassword facesim
+CMD ["python", "server/main.py"]

@@ -28,3 +28,9 @@ __pycache__/
 *.key
 .venv312/
 memory/
+
+# Server sessions (temp data)
+server/sessions/
+
+# Demo server — patient session data never goes in git
+server/sessions/

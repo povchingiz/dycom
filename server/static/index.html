@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FaceSim Demo</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <h1>FaceSim</h1>
+                <span class="subtitle">Face Simulation Pipeline</span>
+            </div>
+            <div class="header-controls">
+                <select id="language-selector">
+                    <option value="en">English</option>
+                    <option value="ru">Русский</option>
+                    <option value="kk">Қазақша</option>
+                </select>
+                <button id="theme-toggle" class="icon-btn" title="Toggle theme">
+                    <span class="theme-icon">🌙</span>
+                </button>
+                <button id="logout-btn" class="btn btn-secondary" style="display: none;">
+                    <span data-i18n="logout">Logout</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Login Section -->
+        <section id="login-section" class="card">
+            <h2 data-i18n="login_title">Enter Password</h2>
+            <form id="login-form">
+                <div class="form-group">
+                    <input 
+                        type="password" 
+                        id="password-input" 
+                        placeholder="Password"
+                        data-i18n-placeholder="password_placeholder"
+                        required
+                    >
+                </div>
+                <button type="submit" class="btn btn-primary" data-i18n="login_btn">
+                    Login
+                </button>
+                <p id="login-error" class="error-message" style="display: none;"></p>
+            </form>
+        </section>
+
+        <!-- Upload Section -->
+        <section id="upload-section" class="card" style="display: none;">
+            <h2 data-i18n="upload_title">Upload DICOM Scan</h2>
+            <p class="description" data-i18n="upload_description">
+                Upload a CBCT DICOM file for automatic teeth and soft tissue segmentation.
+            </p>
+            
+            <div class="upload-area" id="upload-area">
+                <input type="file" id="file-input" accept=".dcm" style="display: none;">
+                <div class="upload-content">
+                    <span class="upload-icon">📁</span>
+                    <p data-i18n="upload_dropzone">
+                        Drag & drop your DICOM file here, or <strong>click to browse</strong>
+                    </p>
+                    <p class="upload-hint" data-i18n="upload_hint">
+                        Accepted format: .dcm (max 500MB)
+                    </p>
+                </div>
+            </div>
+            
+            <div id="upload-progress" class="progress-container" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p class="progress-text" id="progress-text">Uploading...</p>
+            </div>
+        </section>
+
+        <!-- Processing Section -->
+        <section id="processing-section" class="card" style="display: none;">
+            <h2 data-i18n="processing_title">Processing Your Scan</h2>
+            
+            <div class="steps-container">
+                <div class="step" id="step-1">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text" data-i18n="step_converting">Converting DICOM to NIfTI...</span>
+                </div>
+                <div class="step" id="step-2">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text" data-i18n="step_teeth">Segmenting teeth and jawbones...</span>
+                </div>
+                <div class="step" id="step-3">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text" data-i18n="step_soft">Segmenting soft tissue...</span>
+                </div>
+                <div class="step" id="step-4">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text" data-i18n="step_meshes">Generating 3D meshes...</span>
+                </div>
+                <div class="step" id="step-5">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text" data-i18n="step_package">Preparing download package...</span>
+                </div>
+            </div>
+            
+            <div class="progress-circle-container">
+                <div class="progress-circle">
+                    <svg viewBox="0 0 120 120">
+                        <circle class="progress-ring-bg" cx="60" cy="60" r="52"/>
+                        <circle class="progress-ring" id="progress-ring" cx="60" cy="60" r="52"/>
+                    </svg>
+                    <span class="progress-percentage" id="progress-percentage">0%</span>
+                </div>
+            </div>
+            
+            <p class="processing-note" data-i18n="processing_note">
+                This process takes approximately 10-15 minutes on GPU.
+            </p>
+        </section>
+
+        <!-- Results Section -->
+        <section id="results-section" class="card" style="display: none;">
+            <h2 data-i18n="results_title">Processing Complete!</h2>
+            <p class="success-message" data-i18n="results_message">
+                Your segmentation results are ready for download.
+            </p>
+            
+            <div class="results-info">
+                <div class="info-item">
+                    <span class="info-label" data-i18n="results_files">Files generated:</span>
+                    <span class="info-value">~58 STL files</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label" data-i18n="results_format">Format:</span>
+                    <span class="info-value">ZIP archive</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label" data-i18n="results_session">Session ID:</span>
+                    <span class="info-value" id="session-id-display"></span>
+                </div>
+            </div>
+            
+            <div class="button-group">
+                <a id="download-btn" class="btn btn-primary" href="#" download>
+                    <span data-i18n="download_btn">⬇ Download Results</span>
+                </a>
+                <button id="new-scan-btn" class="btn btn-secondary" data-i18n="new_scan_btn">
+                    Process Another Scan
+                </button>
+                <button id="delete-session-btn" class="btn btn-danger" data-i18n="delete_session_btn">
+                    Delete This Session
+                </button>
+            </div>
+        </section>
+
+        <!-- Error Section -->
+        <section id="error-section" class="card" style="display: none;">
+            <h2 data-i18n="error_title">Processing Failed</h2>
+            <p class="error-message" id="error-details"></p>
+            <button id="retry-btn" class="btn btn-primary" data-i18n="retry_btn">
+                Try Again
+            </button>
+        </section>
+
+        <!-- Sessions List (for demo management) -->
+        <section id="sessions-section" class="card" style="display: none;">
+            <h2 data-i18n="sessions_title">Active Sessions</h2>
+            <div id="sessions-list"></div>
+            <button id="refresh-sessions-btn" class="btn btn-secondary" data-i18n="refresh_btn">
+                Refresh
+            </button>
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            <p data-i18n="footer_text">
+                FaceSim Demo — Open-source face simulation pipeline
+            </p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

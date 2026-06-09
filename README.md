@@ -102,7 +102,42 @@ After downloading, your directory should have `data/anon/`, `data/nifti/`, `data
 
 ---
 
-## Running the pipeline
+## 🌐 Running the Web Demo
+
+**New!** Deploy a live demo on a GPU server for real-time segmentation demos.
+
+### Quick Start (GPU Server)
+
+```bash
+# 1. Copy environment config
+cp .env.example .env
+
+# 2. Edit password in .env (IMPORTANT!)
+nano .env
+
+# 3. Run the server
+chmod +x run_server.sh
+./run_server.sh
+```
+
+Access at: `http://localhost:8000` (or public URL on GPU server)
+
+**Features:**
+- 🔐 Password-protected access
+- 📤 Upload DICOM → automatic processing
+- ⏱️ Live progress tracking (10-15 min on GPU)
+- 📥 Download ZIP with all STL files
+- 🌙 Dark/light theme
+- 🌐 English, Russian, Kazakh languages
+- 🗑️ Session management (auto-cleanup after 7 days)
+
+**GPU Speed:** 10-15 minutes vs 3-4 hours on CPU
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full GPU server setup (RunPod, AWS, etc.).
+
+---
+
+## Running the Pipeline (Command Line)
 
 Scripts are run in order, one phase at a time. **Run from the project root.**
 

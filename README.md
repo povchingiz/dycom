@@ -43,7 +43,7 @@ From one CBCT scan (Planmeca ProMax, 409×409×409 voxels @ 0.4mm):
 - **2 soft tissue masks**: skin layer and full soft tissue volume
 - **58 STL mesh files**: ready for Phase 2 FEA coupling
 
-All large files are tracked with DVC (not stored in git). See [Data](#data) section.
+All large files are shared via Google Drive (not stored in git). See [Get the data](#get-the-data) section below.
 
 ---
 
@@ -58,13 +58,13 @@ facesim/
 │   ├── segment_soft_tissue.py  # Threshold-based skin/soft tissue
 │   └── masks_to_stl.py       # NIfTI masks → STL surface meshes
 ├── pipeline/                 # Pipeline orchestration (in progress)
-├── data/                     # All data — large files via DVC
-│   ├── anon/                 # Anonymized DICOM (DVC)
-│   ├── nifti/                # NIfTI volume (DVC)
-│   ├── seg/                  # Segmentation masks (DVC)
+├── data/                     # All data — download from Google Drive (see below)
+│   ├── anon/                 # Anonymized DICOM
+│   ├── nifti/                # NIfTI volume
+│   ├── seg/                  # Segmentation masks
 │   │   ├── teeth/            # 77 tooth/jaw masks
 │   │   └── soft/             # skin + soft_tissue masks
-│   └── stl/                  # STL meshes (DVC)
+│   └── stl/                  # STL meshes
 ├── Dockerfile                # Reproducible environment
 ├── requirements.txt          # Python dependencies
 ├── ROADMAP.md                # Full research plan, decisions, progress
@@ -94,13 +94,11 @@ pip install -r requirements.txt
 
 ### Get the data
 
-Large files (DICOM, NIfTI, masks, STLs) are tracked with DVC, not stored in git. To pull them:
+Large files (DICOM, NIfTI, masks, STLs) are not stored in git. Download the `data/` folder from Google Drive and place it in the project root:
 
-```bash
-dvc pull
-```
+**[Download data folder](https://drive.google.com/drive/folders/1_ejLHSAqT54ABlOMVeU5gx9P-RgiQFti)**
 
-If you don't have DVC remote access, ask the project maintainer for the data files directly.
+After downloading, your directory should have `data/anon/`, `data/nifti/`, `data/seg/`, `data/stl/` at the project root.
 
 ---
 

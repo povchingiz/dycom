@@ -33,17 +33,17 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 
 ## Stack (all open-source)
 
-| Layer | Tool |
-|---|---|
-| Bone/teeth segmentation | 3D Slicer + DentalSegmentator + AMASSS-CBCT |
-| Soft tissue segmentation | TotalSegmentator / threshold / MediaPipe FaceMesh |
-| Face capture (if CBCT lacks soft tissue) | iPhone TrueDepth + Heges → OBJ |
-| Registration | Open3D ICP / CloudCompare |
-| Meshing | Gmsh / TetGen |
-| FEA hard+soft | **FEBio** (hyperelastic, Mooney-Rivlin) |
-| Render before/after | Blender + Python API |
-| Pipeline orchestration | Python + Snakemake/Nextflow |
-| Versioning | git + DVC + Docker |
+| Layer | Tool | Status |
+|---|---|---|
+| Bone/teeth segmentation | TotalSegmentator (ToothFairy3 weights) | ✅ Used |
+| Soft tissue segmentation | Threshold HU (-700 to +200) | ✅ Used |
+| Face capture fallback | iPhone TrueDepth + Heges → OBJ | Not needed (pure-CBCT path) |
+| Registration | Open3D ICP / CloudCompare | Phase 2 |
+| Meshing | Gmsh / TetGen | Phase 2 |
+| FEA hard+soft | **FEBio** (hyperelastic, Mooney-Rivlin) | Phase 3 |
+| Render before/after | Blender + Python API | Phase 4 |
+| Pipeline orchestration | Python scripts | In progress |
+| Versioning | git + DVC + Docker | ✅ Active |
 
 ---
 
@@ -177,10 +177,10 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 
 ## Risks / Blockers
 
-1. **CBCT FOV** may not cover full face → external scan needed. Verify in Phase 0.
+1. **CBCT FOV** may not cover full face → external scan needed. ✅ Resolved: this scan covers full head.
 2. **Soft tissue properties** variable → realistic accuracy ±2-3mm, not surgical-grade.
-3. **Validation:** paired before/after scans required. **Open question.**
-4. **DentalSegmentator** trained on specific scanners — may fail. Plan B in Phase 1.
+3. **Validation:** paired before/after scans required. **Open question — no dataset found yet.**
+4. **DentalSegmentator** trained on specific scanners — may fail. ✅ Resolved: replaced with TotalSegmentator.
 
 ## Ethics
 
@@ -198,4 +198,4 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 
 ## Next step
 
-Phase 0 step 1: unpack zip, verify format and FOV.
+**Phase 2 — Hard+Soft coupling.** Register bone and soft tissue meshes, build tetrahedral FEA mesh, assign material properties. See Phase 2 section above.

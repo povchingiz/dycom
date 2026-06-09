@@ -68,21 +68,18 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 **Output:** labeled mask NIfTI + per-structure STL files (mandible, maxilla, teeth, skin)
 
 **Hard tissue:**
-- [ ] DentalSegmentator → mandible, teeth, mandibular canal
-- [ ] AMASSS-CBCT → maxilla, sinuses, temporal bone
-- [ ] Merge masks → single NIfTI, check overlap/gaps
+- [x] TotalSegmentator (teeth task, ToothFairy3 weights) → 56/77 non-empty masks
+  - lower_jawbone, upper_jawbone, left/right maxillary sinus, IAN canals, crown, pharynx, 32 teeth
+  - 21 empty = wisdom teeth + pulps not visible (expected for this FOV/patient)
+- [ ] Soft tissue segmentation (threshold-based skin, pure-CBCT path)
+- [ ] Merge/review masks → check overlap/gaps
 - [ ] Export STL (decimation 0.3-0.5, smoothing)
 
-**Soft tissue:**
-- [ ] TotalSegmentator head module OR
-- [ ] Threshold-based skin (-200 to -700 HU) OR
-- [ ] MediaPipe FaceMesh with photo (fusion path only)
+**Gaps (deferred):**
+- Incisive canal — skip
+- Missing wisdom teeth — not visible in this scan
 
-**Gaps (defer):**
-- Incisive canal — manual annotation or skip
-- Tooth pulp — skip or threshold inside teeth
-
-**Plan B (DentalSegmentator failure):** fine-tune on 5-10 manual annotations using Slicer
+**Note:** DentalSegmentator/AMASSS replaced by TotalSegmentator teeth task (ToothFairy3 model, 42 classes). Equivalent coverage.
 
 ## Phase 2 — Hard+Soft coupling (week 2)
 

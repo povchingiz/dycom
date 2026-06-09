@@ -17,6 +17,12 @@ __pycache__/
 # OS
 .DS_Store
 
+# Non-project artifacts
+1-bro
+*.docx
+*.pdf
+*.zip
+
 # Secrets
 .env
 *.key

@@ -1,0 +1,6 @@
+outs:
+- md5: 07a8bf0ef00af03c3a6f020b6bd4ed46.dir
+  size: 7409893
+  nfiles: 2
+  hash: md5
+  path: soft

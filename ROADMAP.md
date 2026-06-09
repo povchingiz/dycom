@@ -71,9 +71,11 @@ Can build personalized "before→after" model (implant, orthognathic surgery, ex
 - [x] TotalSegmentator (teeth task, ToothFairy3 weights) → 56/77 non-empty masks
   - lower_jawbone, upper_jawbone, left/right maxillary sinus, IAN canals, crown, pharynx, 32 teeth
   - 21 empty = wisdom teeth + pulps not visible (expected for this FOV/patient)
-- [ ] Soft tissue segmentation (threshold-based skin, pure-CBCT path)
-- [ ] Merge/review masks → check overlap/gaps
-- [ ] Export STL (decimation 0.3-0.5, smoothing)
+- [x] Soft tissue segmentation (threshold-based, pure-CBCT)
+  - skin (-700 to -200 HU): 11.1M voxels (714 cc)
+  - soft_tissue (-200 to 200 HU): 20.5M voxels (1315 cc)
+- [x] Masks reviewed — no critical overlap, gaps acceptable
+- [x] Export STL (capped at 200k faces) — 58 STL files, soft tissue 48MB each, jawbones 37-39MB
 
 **Gaps (deferred):**
 - Incisive canal — skip

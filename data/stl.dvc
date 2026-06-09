@@ -1,0 +1,6 @@
+outs:
+- md5: bd21a10c7ffe5f9718c4ab001449e827.dir
+  size: 221068561
+  nfiles: 58
+  hash: md5
+  path: stl

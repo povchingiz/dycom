@@ -24,10 +24,10 @@ def nifti_to_stl(mask_path: pathlib.Path, out_path: pathlib.Path,
         arr, level=0.5, spacing=(spacing[2], spacing[1], spacing[0])
     )
 
-    # Decimation: keep every Nth face to hit ~target count
-    if decimate < 1.0:
-        n_keep = max(1, int(len(faces) * decimate))
-        idx = np.random.choice(len(faces), n_keep, replace=False)
+    # Decimation: cap at max_faces to keep files manageable
+    max_faces = 200_000
+    if len(faces) > max_faces:
+        idx = np.random.choice(len(faces), max_faces, replace=False)
         faces = faces[idx]
 
     # Write ASCII STL

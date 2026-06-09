@@ -68,4 +68,5 @@ All tools are free and open-source: Python, TotalSegmentator, FEBio, Blender, Op
 
 ## Team / Contact
 
-Yerta — yertaychingiz@gmail.com
+Chingiz — yertaychingiz@gmail.com / tg: @povchingiz
+Sabina - sbsqbiz@gmail.com        / tg: @sab_realism

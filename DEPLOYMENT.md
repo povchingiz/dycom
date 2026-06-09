@@ -132,7 +132,8 @@ Share this URL + password with your demo audience.
 TotalSegmentator needs ~6GB VRAM. RTX 4090 has 24GB - shouldn't happen. Try:
 ```bash
 # Force CPU fallback (slower but works)
-export DEVICE="cpu"
+# Edit .env and set:
+SEGMENTATION_DEVICE=cpu
 ```
 
 ### "Import error: TotalSegmentator"

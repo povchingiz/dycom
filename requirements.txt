@@ -12,6 +12,7 @@ TotalSegmentator>=2.2.0
 scikit-image>=0.22.0
 trimesh>=4.3.2
 open3d>=0.18.0
+scipy>=1.12.0
 
 # Data versioning
 dvc>=3.0.0

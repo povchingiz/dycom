@@ -7,7 +7,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import HTTPException, status
-from fastapi.security import HTTPPasswordCredentials
+from fastapi.security import HTTPBasicCredentials
 from pydantic import BaseModel
 
 

@@ -1,4 +1,4 @@
-# Large data binaries - tracked by DVC (not the .dvc pointer files)
+# ── Patient data (never commit) ─────────────────────────────
 patient_raw/
 data/raw/*.dcm
 data/anon/*.dcm
@@ -8,29 +8,42 @@ data/**/*.stl
 data/**/*.vtk
 data/**/*.vtu
 
-# Python
+# ── Pipeline outputs (large, reproducible) ──────────────────
+data/mesh/
+data/renders/
+data/sim/
+data/validation/
+pipeline_state.json
+
+# ── Server session data ──────────────────────────────────────
+server/sessions/
+
+# ── ML lab outputs ───────────────────────────────────────────
+ml_lab_cbct/logs/*.jsonl
+ml_lab_cbct/checkpoints/
+
+# ── Secrets ─────────────────────────────────────────────────
+.env
+*.key
+
+# ── Python ──────────────────────────────────────────────────
 .venv/
+.venv312/
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
 
-# OS
+# ── OS ──────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
 
-# Non-project artifacts
-1-bro
+# ── Misc ─────────────────────────────────────────────────────
 *.docx
 *.pdf
 *.zip
-
-# Secrets
-.env
-*.key
-.venv312/
+1-bro
+dump/
 memory/
-
-# Server sessions (temp data)
-server/sessions/
-
-# Demo server — patient session data never goes in git
-server/sessions/

@@ -32,11 +32,22 @@ setup:
 	@echo ""
 	@echo "Done. Next: edit .env, then make run (demo) or make pipeline (research)"
 
-setup-gpu: setup
-	@echo "==> Installing PyTorch with CUDA 12.1..."
+setup-gpu:
+	@echo "==> Creating Python 3.12 venv..."
+	python3.12 -m venv $(VENV)
+	$(PIP) install --upgrade pip
+	@echo "==> Installing PyTorch with CUDA 12.1 first (before other deps)..."
 	$(PIP) install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 	@echo "==> Installing nnU-Net v2..."
 	$(PIP) install nnunetv2
+	@echo "==> Installing remaining dependencies..."
+	$(PIP) install -r requirements.txt
+	@if [ ! -f .env ]; then \
+		cp .env.example .env; \
+		echo "==> Created .env — edit it: set DEMO_PASSWORD and SEGMENTATION_DEVICE=cuda"; \
+	else \
+		echo "==> .env already exists"; \
+	fi
 	@echo "==> Setting nnUNet paths in .env..."
 	@grep -q "nnUNet_raw" .env || printf '\n# nnU-Net paths (Phase 6)\nnnUNet_raw=%s/data/nnunet/raw\nnnUNet_preprocessed=%s/data/nnunet/preprocessed\nnnUNet_results=%s/data/nnunet/results\n' "$$PWD" "$$PWD" "$$PWD" >> .env
 	@echo "==> GPU check..."

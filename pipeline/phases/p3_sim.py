@@ -103,9 +103,16 @@ class Phase3Sim(Phase):
 
         mesh = trimesh.load(str(skin_stl), force="mesh")
         if len(mesh.faces) > SKIN_MAX_FACES:
-            target_reduction = 1.0 - SKIN_MAX_FACES / len(mesh.faces)
-            if 0.0 < target_reduction < 1.0:
-                mesh = mesh.simplify_quadric_decimation(SKIN_MAX_FACES)
+            import open3d as o3d
+            o3d_mesh = o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(mesh.vertices),
+                o3d.utility.Vector3iVector(mesh.faces),
+            )
+            o3d_mesh = o3d_mesh.simplify_quadric_decimation(SKIN_MAX_FACES)
+            mesh = trimesh.Trimesh(
+                vertices=np.asarray(o3d_mesh.vertices),
+                faces=np.asarray(o3d_mesh.triangles),
+            )
         trimesh.repair.fix_normals(mesh)
         try:
             trimesh.repair.fill_holes(mesh)

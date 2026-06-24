@@ -276,7 +276,7 @@ class Phase6Train(Phase):
         }, indent=2))
 
     def _patch_dataset_json(self, ds_dir: Path):
-        """Ensure dataset.json has the right labels and file_ending."""
+        """Ensure dataset.json has correct labels, file_ending, and numTraining."""
         dj_path = ds_dir / "dataset.json"
         if dj_path.exists():
             dj = json.loads(dj_path.read_text())
@@ -286,6 +286,11 @@ class Phase6Train(Phase):
         dj.setdefault("labels", TF2_LABELS)
         dj.setdefault("file_ending", ".nii.gz")
         dj.setdefault("overwrite_image_reader_writer", "SimpleITKIO")
+        # Count actual training files and fix numTraining (original dataset.json may have 0)
+        ext = dj.get("file_ending", ".nii.gz")
+        n_actual = len(list((ds_dir / "imagesTr").glob(f"*{ext}")))
+        if n_actual > 0:
+            dj["numTraining"] = n_actual
         dj_path.write_text(json.dumps(dj, indent=2))
 
     # ── step: smoke ──────────────────────────────────────────────────────

@@ -2,19 +2,20 @@ VENV = .venv312
 PYTHON = $(VENV)/bin/python3
 PIP = $(VENV)/bin/pip
 
-.PHONY: help setup setup-gpu run stop pipeline train status clean
+.PHONY: help setup setup-gpu setup-febio run stop pipeline train status clean
 
 help:
 	@echo "FaceSim"
 	@echo ""
-	@echo "  make setup      — install everything for CPU (web demo + pipeline)"
-	@echo "  make setup-gpu  — install everything for GPU server (adds PyTorch CUDA + nnUNet)"
-	@echo "  make run        — start web demo server at :8000"
-	@echo "  make pipeline   — run research pipeline (Phase 1-6)"
-	@echo "  make train      — run Phase 6 ML training only (GPU)"
-	@echo "  make status     — show pipeline state"
-	@echo "  make stop       — stop web server"
-	@echo "  make clean      — remove sessions and pipeline outputs"
+	@echo "  make setup        — install Python deps (CPU)"
+	@echo "  make setup-gpu    — install Python deps + PyTorch CUDA + nnUNet (GPU server)"
+	@echo "  make setup-febio  — build + install FEBio 4 from source (Phase 3 physics)"
+	@echo "  make run          — start web demo server at :8000"
+	@echo "  make pipeline     — run research pipeline (Phase 1-6)"
+	@echo "  make train        — run Phase 6 ML training only (GPU)"
+	@echo "  make status       — show pipeline state"
+	@echo "  make stop         — stop web server"
+	@echo "  make clean        — remove sessions and pipeline outputs"
 
 # ── Setup ────────────────────────────────────────────────────────────
 
@@ -56,6 +57,25 @@ setup-gpu:
 	@echo ""
 	@echo "GPU setup done. Edit .env: set SEGMENTATION_DEVICE=cuda"
 	@echo "Then: make pipeline  (or make train for Phase 6 only)"
+
+FEBIO_SRC = /tmp/febio_src
+FEBIO_TAG = v4.12
+
+setup-febio:
+	@echo "==> Downloading FEBio $(FEBIO_TAG) source..."
+	wget -q -L "https://api.github.com/repos/febiosoftware/FEBio/tarball/$(FEBIO_TAG)" -O /tmp/febio.tar.gz
+	mkdir -p $(FEBIO_SRC) && tar -xzf /tmp/febio.tar.gz -C $(FEBIO_SRC) --strip-components=1
+	@echo "==> Patching missing #include <cstring>..."
+	grep -q "cstring" $(FEBIO_SRC)/FECore/FSPath.cpp || \
+		sed -i '/#include "FSPath.h"/a #include <cstring>' $(FEBIO_SRC)/FECore/FSPath.cpp
+	@echo "==> Installing build deps..."
+	apt-get install -y cmake build-essential libopenblas-dev 2>/dev/null || true
+	@echo "==> Building FEBio (5-15 min)..."
+	mkdir -p $(FEBIO_SRC)/build && cd $(FEBIO_SRC)/build && \
+		cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-fopenmp" && \
+		make -j$$(nproc)
+	cp $(FEBIO_SRC)/build/bin/febio4 /usr/local/bin/febio3
+	@echo "==> FEBio installed: $$(which febio3)"
 
 # ── Run ──────────────────────────────────────────────────────────────
 

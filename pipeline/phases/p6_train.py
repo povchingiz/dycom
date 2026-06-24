@@ -23,7 +23,7 @@ from pathlib import Path
 
 from pipeline.phases.base import Phase
 
-DATASET_ID = 302
+DATASET_ID = 112
 DATASET_NAME = "ToothFairy2"
 
 # ToothFairy2 label map (42 classes: teeth + jaw structures)
@@ -197,6 +197,12 @@ class Phase6Train(Phase):
     # ── step: prepare ────────────────────────────────────────────────────
 
     def _prepare(self, state, data_dir: Path, ds_dir: Path) -> dict:
+        # Data already in nnUNet_raw (e.g. uploaded directly to server)
+        if (ds_dir / "imagesTr").exists() and (ds_dir / "dataset.json").exists():
+            print("[phase6/prepare] dataset already in nnUNet_raw, skipping conversion")
+            self._patch_dataset_json(ds_dir)
+            return {"ds_dir": str(ds_dir), "method": "already_in_nnunet_raw"}
+
         raw_download = data_dir / "raw" / "datasets" / "toothfairy2"
 
         # If dataset already in nnUNet format (HF download may give this directly)

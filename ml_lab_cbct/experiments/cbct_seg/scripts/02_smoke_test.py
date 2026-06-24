@@ -27,8 +27,11 @@ def check_dataset(dataset_id: int):
         print(f"[FAIL] датасет {dataset_id} не найден в nnUNet_raw")
         return False
     ds = matches[0]
-    n_img = len(list((ds / "imagesTr").glob("*.nii.gz")))
-    n_lab = len(list((ds / "labelsTr").glob("*.nii.gz")))
+    import json
+    dj_data = json.loads((ds / "dataset.json").read_text()) if (ds / "dataset.json").exists() else {}
+    ext = dj_data.get("file_ending", ".nii.gz")
+    n_img = len(list((ds / "imagesTr").glob(f"*{ext}")))
+    n_lab = len(list((ds / "labelsTr").glob(f"*{ext}")))
     dj = (ds / "dataset.json").exists()
     print(f"[ok] {ds.name}: images={n_img} labels={n_lab} dataset.json={dj}")
     return n_img > 0 and n_img == n_lab and dj

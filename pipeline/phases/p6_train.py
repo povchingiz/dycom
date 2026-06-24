@@ -283,7 +283,9 @@ class Phase6Train(Phase):
         else:
             dj = {}
         dj.setdefault("channel_names", {"0": "CT"})
-        dj.setdefault("labels", TF2_LABELS)
+        # Always overwrite labels — original dataset.json may not have "background" key
+        # which nnUNet's LabelManager requires (raises RuntimeError otherwise)
+        dj["labels"] = TF2_LABELS
         dj.setdefault("file_ending", ".nii.gz")
         dj.setdefault("overwrite_image_reader_writer", "SimpleITKIO")
         # Count actual training files and fix numTraining (original dataset.json may have 0)

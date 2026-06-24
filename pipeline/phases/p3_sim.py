@@ -103,7 +103,9 @@ class Phase3Sim(Phase):
 
         mesh = trimesh.load(str(skin_stl), force="mesh")
         if len(mesh.faces) > SKIN_MAX_FACES:
-            mesh = mesh.simplify_quadric_decimation(SKIN_MAX_FACES)
+            target_reduction = 1.0 - SKIN_MAX_FACES / len(mesh.faces)
+            if 0.0 < target_reduction < 1.0:
+                mesh = mesh.simplify_quadric_decimation(SKIN_MAX_FACES)
         trimesh.repair.fix_normals(mesh)
         try:
             trimesh.repair.fill_holes(mesh)

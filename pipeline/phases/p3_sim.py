@@ -136,26 +136,32 @@ class Phase3Sim(Phase):
         jaw_ids: list,
         free_ids: list,
     ) -> np.ndarray:
-        disp = np.zeros_like(verts)
-        disp[jaw_ids, 1] = SCENARIO_MM
+        from scipy.sparse import coo_matrix
 
+        n = len(verts)
+        # Build sparse averaging matrix W (free nodes only — constrained rows stay zero)
+        rows, cols, data = [], [], []
+        for i in free_ids:
+            nb = adjacency[i]
+            if nb:
+                w = 1.0 / len(nb)
+                for j in nb:
+                    rows.append(i)
+                    cols.append(j)
+                    data.append(w)
+        W = coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
+
+        disp = np.zeros_like(verts)
         jaw_arr = np.array(jaw_ids, dtype=int)
         skull_arr = np.array(list(skull_ids), dtype=int)
-        free_arr = np.array(free_ids, dtype=int)
+        disp[jaw_arr, 1] = SCENARIO_MM
 
         for iteration in range(N_ITER):
-            new_disp = disp.copy()
-            for i in free_ids:
-                nb = adjacency[i]
-                if nb:
-                    new_disp[i] = disp[nb].mean(axis=0)
-            disp = new_disp
-            disp[jaw_arr, 1] = SCENARIO_MM
-            disp[skull_arr] = 0.0
-
+            disp = W @ disp          # sparse multiply — vectorized, fast
+            disp[jaw_arr, 1] = SCENARIO_MM   # re-pin jaw nodes
+            disp[skull_arr] = 0.0            # re-pin skull nodes
             if iteration % 50 == 49:
-                residual = float(np.abs(new_disp[free_arr] - disp[free_arr]).max())
-                print(f"[phase3]   iter {iteration+1}/{N_ITER} residual={residual:.4f}mm")
+                print(f"[phase3]   iter {iteration+1}/{N_ITER}")
 
         return verts + disp
 

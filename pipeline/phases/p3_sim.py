@@ -23,8 +23,8 @@ import numpy as np
 from pipeline.phases.base import Phase
 
 SCENARIO_MM = 5.0          # mandible advancement along Y (anterior) axis
-SKIN_MAX_FACES = 20_000    # simplify before tet-meshing (original ~200k)
-MESH_SIZE_MM = 5.0         # gmsh max element size in mm
+SKIN_MAX_FACES = 5_000     # simplify aggressively — gmsh hangs on complex surfaces
+MESH_SIZE_MM = 10.0        # coarse elements mesh fast; refine later if needed
 
 
 class Phase3Sim(Phase):
@@ -124,8 +124,9 @@ class Phase3Sim(Phase):
 
         gmsh.initialize()
         gmsh.option.setNumber("General.Verbosity", 1)
-        gmsh.option.setNumber("Mesh.Algorithm3D", 4)  # Frontal-Delaunay
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay — more robust than Frontal
         gmsh.option.setNumber("Mesh.CharacteristicLengthMax", MESH_SIZE_MM)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", MESH_SIZE_MM * 0.1)
 
         gmsh.merge(str(repaired))
         gmsh.model.mesh.classifySurfaces(np.pi, True, True, np.pi)  # permissive angle for skin

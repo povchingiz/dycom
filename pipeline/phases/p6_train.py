@@ -268,6 +268,7 @@ class Phase6Train(Phase):
 
     def _discover_labels(self, ds_dir: Path, ext: str) -> dict:
         """Scan up to 10 label files to find all unique label values, return nnUNet labels dict."""
+        import numpy as np
         import SimpleITK as sitk
         label_files = sorted((ds_dir / "labelsTr").glob(f"*{ext}"))[:10]
         unique = set()

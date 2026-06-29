@@ -62,10 +62,8 @@ class Phase3Sim(Phase):
                 f"No skin nodes within {JAW_RADIUS_MM}mm of jaw — STL coordinate systems may not align."
             )
 
-        adjacency = self._build_adjacency(faces, len(verts))
-
         print(f"[phase3] running Laplacian smoothing ({N_ITER} iterations)...")
-        deformed_verts = self._propagate(verts, adjacency, skull_ids, jaw_ids, free_ids)
+        deformed_verts = self._propagate(verts, faces, skull_ids, jaw_ids, free_ids)
 
         max_disp = float(np.linalg.norm(deformed_verts - verts, axis=1).max())
         print(f"[phase3] max displacement: {max_disp:.2f} mm")
@@ -115,23 +113,12 @@ class Phase3Sim(Phase):
 
         return skull_ids, jaw_ids, free_ids
 
-    # ── adjacency ─────────────────────────────────────────────────────
-
-    def _build_adjacency(self, faces: np.ndarray, n: int) -> list[list[int]]:
-        adj: list[set] = [set() for _ in range(n)]
-        for tri in faces:
-            a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
-            adj[a].update((b, c))
-            adj[b].update((a, c))
-            adj[c].update((a, b))
-        return [list(s) for s in adj]
-
     # ── Laplacian propagation ─────────────────────────────────────────
 
     def _propagate(
         self,
         verts: np.ndarray,
-        adjacency: list[list[int]],
+        faces: np.ndarray,
         skull_ids: set,
         jaw_ids: list,
         free_ids: list,
@@ -142,17 +129,20 @@ class Phase3Sim(Phase):
         n = len(verts)
         print(f"[phase3] building sparse Laplacian ({len(free_ids)} free nodes)...")
         t0 = time.time()
-        rows, cols, data = [], [], []
-        for i in free_ids:
-            nb = adjacency[i]
-            if nb:
-                w = 1.0 / len(nb)
-                for j in nb:
-                    rows.append(i)
-                    cols.append(j)
-                    data.append(w)
-        W = coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
-        print(f"[phase3] sparse matrix built in {time.time()-t0:.1f}s ({len(data)} entries)")
+        # Build all directed edges from face array — fully vectorized, no Python loop
+        edges = np.vstack([
+            faces[:, [0, 1]], faces[:, [1, 0]],
+            faces[:, [1, 2]], faces[:, [2, 1]],
+            faces[:, [0, 2]], faces[:, [2, 0]],
+        ])
+        free_mask = np.zeros(n, dtype=bool)
+        free_mask[free_ids] = True
+        edges = edges[free_mask[edges[:, 0]]]   # keep only free-node sources
+        src, dst = edges[:, 0], edges[:, 1]
+        degree = np.bincount(src, minlength=n).astype(float)
+        degree[degree == 0] = 1.0
+        W = coo_matrix((1.0 / degree[src], (src, dst)), shape=(n, n)).tocsr()
+        print(f"[phase3] sparse matrix built in {time.time()-t0:.1f}s")
 
         disp = np.zeros_like(verts)
         jaw_arr = np.array(jaw_ids, dtype=int)

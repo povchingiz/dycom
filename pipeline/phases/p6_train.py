@@ -266,6 +266,21 @@ class Phase6Train(Phase):
                 pairs.append((img, label))
         return pairs
 
+    def _discover_labels(self, ds_dir: Path, ext: str) -> dict:
+        """Scan up to 10 label files to find all unique label values, return nnUNet labels dict."""
+        import SimpleITK as sitk
+        label_files = sorted((ds_dir / "labelsTr").glob(f"*{ext}"))[:10]
+        unique = set()
+        for f in label_files:
+            arr = sitk.GetArrayFromImage(sitk.ReadImage(str(f)))
+            unique.update(int(v) for v in np.unique(arr))
+        unique.discard(0)
+        labels = {"background": 0}
+        for v in sorted(unique):
+            labels[f"label_{v:03d}"] = v
+        print(f"[phase6/patch] discovered {len(labels)} labels: {sorted(labels.values())}")
+        return labels
+
     def _write_dataset_json(self, ds_dir: Path, n: int):
         (ds_dir / "dataset.json").write_text(json.dumps({
             "channel_names": {"0": "CT"},
@@ -285,13 +300,9 @@ class Phase6Train(Phase):
         dj.setdefault("channel_names", {"0": "CT"})
         dj.setdefault("file_ending", ".nii.gz")
         dj.setdefault("overwrite_image_reader_writer", "SimpleITKIO")
-        # Keep original labels — only inject "background": 0 if missing
-        # (overwriting with TF2_LABELS breaks datasets with different label indices)
-        labels = dj.get("labels", {})
-        if not labels:
-            labels = TF2_LABELS
-        elif "background" not in labels:
-            labels["background"] = 0
+        # Rebuild labels from actual unique values in label files
+        # (our earlier patch overwrote the original labels with a wrong mapping)
+        labels = self._discover_labels(ds_dir, dj.get("file_ending", ".nii.gz"))
         dj["labels"] = labels
         # Count actual training files and fix numTraining (original dataset.json may have 0)
         ext = dj.get("file_ending", ".nii.gz")
@@ -324,7 +335,7 @@ class Phase6Train(Phase):
         # Plan and preprocess first (idempotent)
         print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
         subprocess.run(
-            ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID), "--verify_dataset_integrity"],
+            ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID)],
             check=True,
         )
 

@@ -336,7 +336,7 @@ class Phase6Train(Phase):
         # Plan and preprocess first (idempotent)
         print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
         subprocess.run(
-            ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID)],
+            ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID), "-np", "2"],
             check=True,
         )
 

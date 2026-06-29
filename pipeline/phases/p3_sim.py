@@ -136,10 +136,12 @@ class Phase3Sim(Phase):
         jaw_ids: list,
         free_ids: list,
     ) -> np.ndarray:
+        import time
         from scipy.sparse import coo_matrix
 
         n = len(verts)
-        # Build sparse averaging matrix W (free nodes only — constrained rows stay zero)
+        print(f"[phase3] building sparse Laplacian ({len(free_ids)} free nodes)...")
+        t0 = time.time()
         rows, cols, data = [], [], []
         for i in free_ids:
             nb = adjacency[i]
@@ -150,18 +152,22 @@ class Phase3Sim(Phase):
                     cols.append(j)
                     data.append(w)
         W = coo_matrix((data, (rows, cols)), shape=(n, n)).tocsr()
+        print(f"[phase3] sparse matrix built in {time.time()-t0:.1f}s ({len(data)} entries)")
 
         disp = np.zeros_like(verts)
         jaw_arr = np.array(jaw_ids, dtype=int)
         skull_arr = np.array(list(skull_ids), dtype=int)
         disp[jaw_arr, 1] = SCENARIO_MM
 
+        t0 = time.time()
         for iteration in range(N_ITER):
-            disp = W @ disp          # sparse multiply — vectorized, fast
-            disp[jaw_arr, 1] = SCENARIO_MM   # re-pin jaw nodes
-            disp[skull_arr] = 0.0            # re-pin skull nodes
-            if iteration % 50 == 49:
-                print(f"[phase3]   iter {iteration+1}/{N_ITER}")
+            disp = W @ disp
+            disp[jaw_arr, 1] = SCENARIO_MM
+            disp[skull_arr] = 0.0
+            if iteration % 10 == 9:
+                elapsed = time.time() - t0
+                eta = elapsed / (iteration + 1) * (N_ITER - iteration - 1)
+                print(f"[phase3]   iter {iteration+1}/{N_ITER}  elapsed={elapsed:.1f}s  eta={eta:.0f}s")
 
         return verts + disp
 

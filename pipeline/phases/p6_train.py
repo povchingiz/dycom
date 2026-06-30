@@ -267,19 +267,19 @@ class Phase6Train(Phase):
         return pairs
 
     def _discover_labels(self, ds_dir: Path, ext: str) -> dict:
-        """Scan up to 10 label files to find all unique label values, return nnUNet labels dict."""
-        import numpy as np
+        """Scan all label files for global max value, declare labels 0..max_label."""
         import SimpleITK as sitk
-        label_files = sorted((ds_dir / "labelsTr").glob(f"*{ext}"))[:10]
-        unique = set()
-        for f in label_files:
+        label_files = sorted((ds_dir / "labelsTr").glob(f"*{ext}"))
+        max_label = 0
+        for i, f in enumerate(label_files):
             arr = sitk.GetArrayFromImage(sitk.ReadImage(str(f)))
-            unique.update(int(v) for v in np.unique(arr))
-        unique.discard(0)
+            max_label = max(max_label, int(arr.max()))
+            if i % 50 == 0:
+                print(f"[phase6/patch] scanning labels {i}/{len(label_files)}, max so far={max_label}")
         labels = {"background": 0}
-        for v in sorted(unique):
+        for v in range(1, max_label + 1):
             labels[f"label_{v:03d}"] = v
-        print(f"[phase6/patch] discovered {len(labels)} labels: {sorted(labels.values())}")
+        print(f"[phase6/patch] {len(labels)} labels declared (0..{max_label})")
         return labels
 
     def _write_dataset_json(self, ds_dir: Path, n: int):

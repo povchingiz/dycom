@@ -340,8 +340,12 @@ class Phase6Train(Phase):
             check=True,
         )
 
-        # Baseline: ResEncUNetL (same as SOTA on ToothFairy2, 4090 reference)
-        # On L40 (48GB) we can push to large_patch — but start with baseline
+        # Generate ResEncUNetL plan (planning only, preprocessing already done above)
+        subprocess.run(
+            ["nnUNetv2_plan_experiment", "-d", str(DATASET_ID), "-pl", "nnUNetResEncUNetLPlanner"],
+            check=True,
+        )
+
         print("[phase6/train] launching nnUNetv2_train (this will run overnight)...")
         subprocess.run(
             [

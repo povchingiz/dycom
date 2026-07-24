@@ -47,22 +47,15 @@ You'll get:
 SSH into your server or use Jupyter terminal:
 
 ```bash
-# Clone your repo
 git clone <your-repo-url>
 cd dycom
 
-# Create Python 3.12 environment
-python3.12 -m venv .venv312
-source .venv312/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# This installs:
-# - TotalSegmentator (AI segmentation)
-# - FastAPI, uvicorn (web server)
-# - All medical imaging libs
+make setup-gpu      # venv + PyTorch CUDA + nnU-Net + medical imaging libs + nnUNet_* paths
+# (for a CPU-only demo box, `make setup` is enough)
 ```
+
+`make setup-gpu` installs TotalSegmentator (segmentation), FastAPI/uvicorn (web
+server), nnU-Net v2 (Phase 6 training), and all medical-imaging deps.
 
 ---
 
@@ -83,14 +76,8 @@ nano .env
 ## Step 4: Run the Server
 
 ```bash
-# Make script executable
-chmod +x run_server.sh
-
-# Run
-./run_server.sh
+make run          # starts FastAPI at http://0.0.0.0:8000 (make stop to halt)
 ```
-
-Server starts on `http://0.0.0.0:8000`
 
 ### On RunPod:
 
@@ -187,10 +174,23 @@ For production use (not just demos):
 
 ---
 
+## Training (Phase 6) on the GPU server
+
+The web demo uses TotalSegmentator. To train the replacement nnU-Net model:
+
+```bash
+make train        # pipeline Phase 6: download → prepare → smoke → train → evaluate
+```
+
+Run it in `tmux` — training takes ~12h on an L40S. It is OOM-hardened and resumes
+from checkpoint if interrupted. See [training/README.md](training/README.md).
+
+---
+
 ## Support
 
 Issues? Check:
-- Server logs: stdout from `python main.py`
+- Server logs: stdout from `make run`
 - Browser console: F12 → Console tab
 - Session status: `GET /sessions` endpoint
 

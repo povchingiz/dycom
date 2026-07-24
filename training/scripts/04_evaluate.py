@@ -41,10 +41,15 @@ def _erode(mask):
     return binary_erosion(mask)
 
 
-def load_nii(path):
-    import nibabel as nib
-    img = nib.load(str(path))
-    return np.asarray(img.dataobj), img.header.get_zooms()[:3]
+def load_seg(path):
+    """Читает сегментацию в любом формате (.nii.gz, .mha, .nrrd ...) через
+    SimpleITK. SimpleITK spacing идёт как (x,y,z), а массив — (z,y,x),
+    поэтому spacing разворачиваем, чтобы совпадал с осями массива."""
+    import SimpleITK as sitk
+    img = sitk.ReadImage(str(path))
+    arr = sitk.GetArrayFromImage(img)          # (z, y, x)
+    spacing_zyx = tuple(reversed(img.GetSpacing()))
+    return arr, spacing_zyx
 
 
 def main():
@@ -52,20 +57,25 @@ def main():
     ap.add_argument("--pred-dir", type=Path, required=True, help="папка с предсказаниями")
     ap.add_argument("--gt-dir", type=Path, required=True, help="папка с held-out метками")
     ap.add_argument("--labels", type=str, default="1,2,3", help="классы через запятую")
+    ap.add_argument("--file-ending", type=str, default=".nii.gz",
+                    help="расширение масок (.nii.gz | .mha | .nrrd ...)")
     ap.add_argument("--configs", nargs="+", default=["baseline"], help="имена конфигов для таблицы")
     ap.add_argument("--out", type=Path, default=Path("metrics.json"))
     args = ap.parse_args()
 
     labels = [int(x) for x in args.labels.split(",")]
-    preds = sorted(args.pred_dir.glob("*.nii.gz"))
+    ext = args.file_ending if args.file_ending.startswith(".") else f".{args.file_ending}"
+    preds = sorted(args.pred_dir.glob(f"*{ext}"))
+    if not preds:
+        print(f"[warn] в {args.pred_dir} не найдено файлов *{ext} — проверь --file-ending")
     results = {}
     per_case = []
     for pred_path in preds:
         gt_path = args.gt_dir / pred_path.name
         if not gt_path.exists():
             continue
-        pred, _ = load_nii(pred_path)
-        gt, spacing = load_nii(gt_path)
+        pred, _ = load_seg(pred_path)
+        gt, spacing = load_seg(gt_path)
         row = {"case": pred_path.name}
         for lb in labels:
             row[f"dice_{lb}"] = round(dice(pred, gt, lb), 4)

@@ -10,7 +10,7 @@ Sub-steps (each idempotent, resumes from last completed):
 
 Required env vars (set in .env or shell):
   nnUNet_raw, nnUNet_preprocessed, nnUNet_results
-  (run ml_lab_cbct/experiments/cbct_seg/scripts/00_setup_env.sh to set these)
+  (run training/scripts/00_setup_env.sh to set these)
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ class Phase6Train(Phase):
             if not os.getenv(var):
                 return False, (
                     f"{var} not set — run:\n"
-                    "  source ml_lab_cbct/experiments/cbct_seg/scripts/00_setup_env.sh\n"
+                    "  source training/scripts/00_setup_env.sh\n"
                     "  (or add nnUNet_raw / nnUNet_preprocessed / nnUNet_results to .env)"
                 )
         return True, ""
@@ -318,7 +318,7 @@ class Phase6Train(Phase):
         """Run the existing smoke test script before burning GPU time."""
         smoke_script = (
             Path(__file__).parent.parent.parent
-            / "ml_lab_cbct/experiments/cbct_seg/scripts/02_smoke_test.py"
+            / "training/scripts/02_smoke_test.py"
         )
         result = subprocess.run(
             [sys.executable, str(smoke_script), f"--dataset={DATASET_ID}"],
@@ -332,30 +332,128 @@ class Phase6Train(Phase):
 
     # ── step: train ──────────────────────────────────────────────────────
 
-    def _train(self, state, data_dir: Path, ds_dir: Path) -> dict:
-        # Plan and preprocess first (idempotent)
-        print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
-        subprocess.run(
-            ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID), "-np", "2"],
-            check=True,
-        )
+    def _train_env(self) -> dict:
+        """Environment hardened against OOM (both GPU VRAM and CPU/shm).
 
-        # Generate ResEncUNetL plan (planning only, preprocessing already done above)
+        - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True → lets the CUDA
+          allocator grow/shrink instead of fragmenting into unusable holes;
+          this alone prevents most late-run "CUDA out of memory" crashes.
+        - nnUNet_n_proc_DA caps data-augmentation worker processes. Each worker
+          forks CPU RAM and uses /dev/shm; in the 64MB-shm Docker box too many
+          workers is the #1 cause of the loader dying mid-epoch.
+        - TORCHDYNAMO_DISABLE=1 avoids the torch.compile path (also spares the
+          extra compile-time memory spike on first batch).
+        """
+        env = os.environ.copy()
+        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        env.setdefault("nnUNet_n_proc_DA", "2")
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("TORCHDYNAMO_DISABLE", "1")
+        return env
+
+    def _run_streamed(self, cmd: list[str], env: dict) -> tuple[int, str]:
+        """Run a long command, streaming output live AND capturing tail.
+
+        Live streaming matters for a 12h run — buffered output would be lost
+        if the process is killed. We keep the last 200 lines to detect OOM.
+        """
+        from collections import deque
+        tail: deque[str] = deque(maxlen=200)
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        for line in proc.stdout:  # type: ignore[union-attr]
+            print(line, end="", flush=True)
+            tail.append(line)
+        proc.wait()
+        return proc.returncode, "".join(tail)
+
+    @staticmethod
+    def _is_oom(log: str) -> bool:
+        markers = (
+            "CUDA out of memory",
+            "out of memory",
+            "cuda runtime error (2)",
+            "DefaultCPUAllocator: not enough memory",
+            "Bus error",            # classic /dev/shm exhaustion in workers
+            "shared memory",
+        )
+        low = log.lower()
+        return any(m.lower() in low for m in markers)
+
+    def _train(self, state, data_dir: Path, ds_dir: Path) -> dict:
+        env = self._train_env()
+
+        # Plan + preprocess. Skip if preprocessed data already exists (expensive,
+        # ~73 min for this dataset) so resumes don't re-scan 480 volumes.
+        prep_root = Path(os.environ["nnUNet_preprocessed"])
+        ds_pattern = f"Dataset{DATASET_ID:03d}_{DATASET_NAME}"
+        already_preprocessed = (prep_root / ds_pattern).exists() and any(
+            (prep_root / ds_pattern).glob("nnUNetPlans*")
+        )
+        if already_preprocessed:
+            print("[phase6/train] preprocessed data present, skipping plan_and_preprocess")
+        else:
+            print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
+            subprocess.run(
+                ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID),
+                 "-np", "2", "--verify_dataset_integrity"],
+                check=True, env=env,
+            )
+
+        # ResEncUNetL plan (planning only — preprocessing above already produced
+        # the raw fingerprint the planner reads).
         subprocess.run(
             ["nnUNetv2_plan_experiment", "-d", str(DATASET_ID), "-pl", "nnUNetResEncUNetLPlanner"],
-            check=True,
+            check=True, env=env,
         )
 
-        print("[phase6/train] launching nnUNetv2_train (this will run overnight)...")
-        subprocess.run(
-            [
+        # Two-tier launch: the ResEncL plan sizes patch/batch for a full 48GB
+        # L40. If it OOMs anyway (fragmentation, other processes, a smaller
+        # card), fall back to the default 3d_fullres plan, which uses a smaller
+        # footprint, rather than losing the whole run.
+        attempts = [
+            ("nnUNetResEncUNetLPlans", "ResEncL (large, tuned for L40)"),
+            ("nnUNetPlans",            "default 3d_fullres (smaller footprint)"),
+        ]
+        last_log = ""
+        for plan, desc in attempts:
+            print(f"[phase6/train] launching nnUNetv2_train — plan={plan} ({desc})")
+            print("[phase6/train] (streaming live; safe to detach in tmux)")
+            cmd = [
                 "nnUNetv2_train", str(DATASET_ID), "3d_fullres", "0",
-                "-p", "nnUNetResEncUNetLPlans",
-                "--npz",
-            ],
-            check=True,
+                "-p", plan, "--npz", "--c",   # --c: resume from checkpoint if present
+            ]
+            rc, last_log = self._run_streamed(cmd, env)
+            if rc == 0:
+                return {"config": "3d_fullres", "plan": plan, "fold": 0}
+            if self._is_oom(last_log):
+                print(f"[phase6/train] OOM detected with {plan} — retrying with smaller plan")
+                self._clear_cuda_cache()
+                continue
+            # Non-OOM failure: don't mask it by silently downgrading.
+            raise RuntimeError(
+                f"nnUNetv2_train failed (rc={rc}, plan={plan}, not an OOM).\n"
+                f"Last log lines:\n{last_log[-1500:]}"
+            )
+
+        raise RuntimeError(
+            "Training ran out of memory even on the default plan. Reduce further:\n"
+            "  - lower batch/patch via a custom plan, or\n"
+            "  - export nnUNet_n_proc_DA=1 to cut dataloader RAM/shm, or\n"
+            "  - free VRAM (nvidia-smi) — another process may be resident.\n"
+            f"Last log lines:\n{last_log[-1500:]}"
         )
-        return {"config": "3d_fullres", "plan": "nnUNetResEncUNetLPlans", "fold": 0}
+
+    @staticmethod
+    def _clear_cuda_cache():
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     # ── step: evaluate ───────────────────────────────────────────────────
 
@@ -373,9 +471,16 @@ class Phase6Train(Phase):
             # nnUNet puts held-out in preprocessed
             gt_dir = Path(os.environ["nnUNet_preprocessed"]) / ds_pattern / "gt_segmentations"
 
+        # Use the labels ACTUALLY declared in dataset.json (rebuilt by
+        # _discover_labels to 0..max), not the static TF2_LABELS which caps at
+        # 34 and would silently ignore the higher classes in this dataset.
+        dj = json.loads((ds_dir / "dataset.json").read_text())
+        label_values = sorted(v for v in dj.get("labels", TF2_LABELS).values() if int(v) > 0)
+        file_ending = dj.get("file_ending", ".nii.gz")
+
         eval_script = (
             Path(__file__).parent.parent.parent
-            / "ml_lab_cbct/experiments/cbct_seg/scripts/04_evaluate.py"
+            / "training/scripts/04_evaluate.py"
         )
         out_metrics = results_root / ds_pattern / "metrics.json"
         subprocess.run(
@@ -383,7 +488,8 @@ class Phase6Train(Phase):
                 sys.executable, str(eval_script),
                 "--pred-dir", str(pred_dir),
                 "--gt-dir", str(gt_dir),
-                "--labels", ",".join(str(v) for v in TF2_LABELS.values() if v > 0),
+                "--labels", ",".join(str(int(v)) for v in label_values),
+                "--file-ending", file_ending,
                 "--out", str(out_metrics),
             ],
             check=True,

@@ -1,21 +1,24 @@
 # Face Simulation Pipeline (FaceSim)
 
-A fully open-source pipeline that predicts **how a patient's face will look after dental or jaw surgery** — before the procedure happens.
+A fully open-source pipeline that predicts **how a patient's face will look after
+dental or jaw surgery** — before the procedure happens.
 
-Given one CBCT scan, the pipeline segments teeth and soft tissue, builds a physics simulation of the face, and renders a before/after visualization. No commercial software required.
+Given one CBCT scan, the pipeline segments teeth and soft tissue, simulates the
+soft-tissue response to a jaw movement, and renders a before/after visualization.
+No commercial software required.
 
 ---
 
 ## What problem does this solve?
 
-Surgeons currently rely on experience and 2D X-rays to estimate post-surgical appearance. This pipeline gives patients and clinicians a 3D preview of outcomes for procedures like:
+Surgeons currently rely on experience and 2D X-rays to estimate post-surgical
+appearance. This pipeline gives patients and clinicians a 3D preview of outcomes
+for procedures like implant placement, orthognathic surgery (jaw repositioning),
+tooth extraction, and prosthetics.
 
-- Implant placement
-- Orthognathic surgery (jaw repositioning)
-- Tooth extraction
-- Prosthetics
-
-The target accuracy is **<2mm surface error** — the clinical standard for soft tissue prediction.
+Commercial tools that attempt this (Dolphin Imaging, ProPlan CMF) cost $10,000+/yr,
+need manual expert input, and are inaccessible to most clinics. FaceSim is
+open-source, automated, and reproducible.
 
 ---
 
@@ -24,14 +27,17 @@ The target accuracy is **<2mm surface error** — the clinical standard for soft
 | Phase | Description | Status |
 |---|---|---|
 | **0 — Setup** | Unpack DICOM, anonymize, verify scan quality | ✅ Complete |
-| **1 — Segmentation** | Extract teeth, jawbones, soft tissue as 3D masks | ✅ Complete |
-| **2 — Mesh coupling** | Register bone and soft tissue, build FEA mesh | 🔲 Next |
-| **3 — Simulation** | FEBio physics simulation of surgical scenarios | 🔲 Pending |
-| **4 — Visualization** | Blender before/after render, heatmap | 🔲 Pending |
-| **5 — Validation** | Compare prediction vs real post-op scan | 🔲 Pending |
-| **6 — ML acceleration** | Train fast learned model on physics-generated pairs | 🔲 Future |
+| **1 — Segmentation** | Extract teeth, jawbones, soft tissue as 3D masks (TotalSegmentator) | ✅ Complete |
+| **2 — Meshing** | Open3D mesh cleanup, before/after structure | ✅ Complete |
+| **3 — Simulation** | Laplacian soft-tissue displacement propagation | ✅ Complete |
+| **4 — Render** | Before/after side-by-side render | ✅ Complete |
+| **5 — Validation** | Placeholder (real validation needs a paired post-op scan) | ✅ Complete |
+| **6 — ML training** | Train nnU-Net on ToothFairy2 to replace TotalSegmentator | 🔄 In progress |
 
-See [ROADMAP.md](ROADMAP.md) for full detail on each phase, decisions made, and what is left to do.
+The end-to-end before/after pipeline (phases 0–5) runs today. Phase 6 is a
+segmentation-quality upgrade, not a blocker for the demo.
+
+See [ROADMAP.md](ROADMAP.md) for full detail on each phase, decisions, and open work.
 
 ---
 
@@ -39,11 +45,13 @@ See [ROADMAP.md](ROADMAP.md) for full detail on each phase, decisions made, and 
 
 From one CBCT scan (Planmeca ProMax, 409×409×409 voxels @ 0.4mm):
 
-- **56 anatomical masks** (NIfTI format): every visible tooth, upper/lower jawbone, maxillary sinuses, inferior alveolar nerve canals, pharynx
-- **2 soft tissue masks**: skin layer and full soft tissue volume
-- **58 STL mesh files**: ready for Phase 2 FEA coupling
+- **56 anatomical masks**: every visible tooth, upper/lower jawbone, maxillary
+  sinuses, nerve canals, pharynx
+- **2 soft-tissue masks**: skin layer and full soft-tissue volume
+- **58 STL mesh files**: input to the simulation stage
 
-All large files are shared via Google Drive (not stored in git). See [Get the data](#get-the-data) section below.
+Large files are DVC-tracked / shared via Google Drive, not stored in git
+(see [Get the data](#get-the-data)).
 
 ---
 
@@ -51,23 +59,22 @@ All large files are shared via Google Drive (not stored in git). See [Get the da
 
 ```
 facesim/
-├── scripts/                  # All processing scripts
-│   ├── dcm_to_nifti.py       # Convert DICOM → NIfTI volume
+├── pipeline/                 # Canonical orchestration — state machine, phases 1–6
+│   ├── main.py               # Entry point (make pipeline / make train / make status)
+│   └── phases/               # p1_seg … p6_train
+├── segmentation/             # Segmentation helpers used by pipeline + server
+│   ├── dcm_to_nifti.py       # DICOM → NIfTI volume
 │   ├── run_teeth_seg.py      # Teeth/jaw segmentation (TotalSegmentator)
-│   ├── segment.py            # General segmentation runner
 │   ├── segment_soft_tissue.py  # Threshold-based skin/soft tissue
 │   └── masks_to_stl.py       # NIfTI masks → STL surface meshes
-├── pipeline/                 # Pipeline orchestration (in progress)
-├── data/                     # All data — download from Google Drive (see below)
-│   ├── anon/                 # Anonymized DICOM
-│   ├── nifti/                # NIfTI volume
-│   ├── seg/                  # Segmentation masks
-│   │   ├── teeth/            # 77 tooth/jaw masks
-│   │   └── soft/             # skin + soft_tissue masks
-│   └── stl/                  # STL meshes
-├── Dockerfile                # Reproducible environment
-├── requirements.txt          # Python dependencies
+├── training/                 # Phase 6 nnU-Net training (see training/README.md)
+│   ├── scripts/              # 00_setup_env, 02_smoke_test, 04_evaluate
+│   └── configs/ · notebooks/
+├── server/                   # FastAPI web demo (:8000)
+├── data/                     # DVC-tracked / Google Drive (anon, nifti, seg, stl)
+├── Makefile · Dockerfile · requirements.txt
 ├── ROADMAP.md                # Full research plan, decisions, progress
+├── DEPLOYMENT.md             # GPU-server deployment / ops
 └── README.md                 # This file
 ```
 
@@ -75,132 +82,91 @@ facesim/
 
 ## Setup
 
-### Requirements
-
-- Python 3.12 (not 3.13/3.14 — TotalSegmentator incompatibility)
-- ~8GB free RAM for segmentation
-- ~4GB disk for model weights (auto-downloaded on first run)
-
-### Install
+Requirements: Python 3.12 (not 3.13/3.14 — TotalSegmentator incompatibility),
+~8GB RAM for segmentation, ~4GB disk for model weights (auto-downloaded).
 
 ```bash
-git clone <repo-url>
-cd facesim
-
-python3.12 -m venv .venv312
-source .venv312/bin/activate
-pip install -r requirements.txt
+git clone <repo-url> && cd dycom
+make setup          # CPU: venv + deps + .env
+# or
+make setup-gpu      # GPU server: + PyTorch CUDA + nnU-Net + nnUNet_* paths
 ```
+
+Then edit `.env` (set `DEMO_PASSWORD`, and `SEGMENTATION_DEVICE=cuda` on GPU).
 
 ### Get the data
 
-Large files (DICOM, NIfTI, masks, STLs) are not stored in git. Download the `data/` folder from Google Drive and place it in the project root:
+Large files (DICOM, NIfTI, masks, STLs) are not stored in git. Download the
+`data/` folder from Google Drive and place it at the project root:
 
 **[Download data folder](https://drive.google.com/drive/folders/1_ejLHSAqT54ABlOMVeU5gx9P-RgiQFti)**
 
-After downloading, your directory should have `data/anon/`, `data/nifti/`, `data/seg/`, `data/stl/` at the project root.
+You should end up with `data/anon/`, `data/nifti/`, `data/seg/`, `data/stl/`.
 
 ---
 
-## 🌐 Running the Web Demo
+## Running the pipeline
 
-**New!** Deploy a live demo on a GPU server for real-time segmentation demos.
-
-### Quick Start (GPU Server)
+Everything goes through the Makefile from the project root:
 
 ```bash
-# 1. Copy environment config
-cp .env.example .env
-
-# 2. Edit password in .env (IMPORTANT!)
-nano .env
-
-# 3. Run the server
-chmod +x run_server.sh
-./run_server.sh
+make pipeline       # run the full research pipeline (phases 1–6)
+make train          # Phase 6 only — nnU-Net training on GPU
+make status         # show current pipeline state
 ```
 
-Access at: `http://localhost:8000` (or public URL on GPU server)
+`make pipeline` == `python pipeline/main.py`. The pipeline is a checkpointed state
+machine: each phase records completion, auto-detects existing artifacts, and
+resumes from where it stopped. Individual phases: `python pipeline/main.py --phase N`.
 
-**Features:**
-- 🔐 Password-protected access
-- 📤 Upload DICOM → automatic processing
-- ⏱️ Live progress tracking (10-15 min on GPU)
-- 📥 Download ZIP with all STL files
-- 🌙 Dark/light theme
-- 🌐 English, Russian, Kazakh languages
-- 🗑️ Session management (auto-cleanup after 7 days)
-
-**GPU Speed:** 10-15 minutes vs 3-4 hours on CPU
-
-See [DEPLOYMENT.md](DEPLOYMENT.md) for full GPU server setup (RunPod, AWS, etc.).
+Under the hood, Phase 1 calls the helpers in `segmentation/` (DICOM → NIfTI →
+TotalSegmentator teeth/jaw + threshold soft tissue → STL). Phase 3 runs the
+Laplacian displacement simulation (tunables in `pipeline/phases/p3_sim.py`:
+`SCENARIO_MM`, `JAW_RADIUS_MM`, `N_ITER`).
 
 ---
 
-## Running the Pipeline (Command Line)
-
-Scripts are run in order, one phase at a time. **Run from the project root.**
-
-### Phase 0 — Convert DICOM to NIfTI
+## Web demo
 
 ```bash
-python scripts/dcm_to_nifti.py data/anon/patient_anon.dcm data/nifti/patient.nii.gz
+make run            # starts FastAPI at http://0.0.0.0:8000
+make stop           # stops it
 ```
 
-### Phase 1a — Teeth and jaw segmentation
-
-This takes **1–3 hours on CPU**. Close other applications first.
-
-```bash
-python scripts/run_teeth_seg.py
-```
-
-Output: `data/seg/teeth/` — 77 NIfTI masks
-
-### Phase 1b — Soft tissue segmentation
-
-Fast (~30 seconds):
-
-```bash
-python scripts/segment_soft_tissue.py
-```
-
-Output: `data/seg/soft/skin.nii.gz`, `data/seg/soft/soft_tissue.nii.gz`
-
-### Phase 1c — Export STL meshes
-
-```bash
-python scripts/masks_to_stl.py
-```
-
-Output: `data/stl/` — 58 STL files
+Upload a DICOM → automatic processing (10–15 min on GPU, 3–4h on CPU) → download
+a ZIP of STL files. Password-protected; EN/RU/KZ; sessions auto-clean after 7 days.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full GPU-server setup (RunPod, AWS, etc.).
 
 ---
 
 ## Key design decisions
 
-**Pure-CBCT path chosen (no external face scan):** The Planmeca ProMax scan includes sufficient soft tissue signal (skin HU range present, 10M voxels). iPhone face scan fallback is documented in ROADMAP but not needed for this case.
+**Pure-CBCT path (no external face scan):** the Planmeca ProMax scan carries
+enough soft-tissue signal (skin HU range present, ~10M voxels).
 
-**TotalSegmentator instead of DentalSegmentator:** DentalSegmentator requires 3D Slicer GUI and cannot run headless. TotalSegmentator with ToothFairy3 weights provides equivalent coverage (42 classes) via Python API.
+**TotalSegmentator over DentalSegmentator:** DentalSegmentator needs the 3D Slicer
+GUI and can't run headless; TotalSegmentator (ToothFairy3 weights) gives equivalent
+coverage via a Python API. Phase 6 aims to replace it with a purpose-trained nnU-Net.
 
-**Physics-first, ML-second:** The pipeline uses finite element analysis (FEBio) to simulate tissue deformation. Once validated, the physics pipeline will generate synthetic before/after pairs to train a fast ML model (Phase 6).
+**Laplacian displacement, not FEA:** FEBio/gmsh were abandoned — the skin STL is
+not watertight, so tetrahedral meshing crashed. The pipeline instead propagates
+jaw displacement to jaw-adjacent skin nodes via a sparse Laplacian solve
+(fully vectorized, ~60s). See ROADMAP "Known Issues" for the trail.
 
 ---
 
 ## Data privacy
 
-The patient DICOM was anonymized before any processing:
-- `PatientName` → `ANON_001`
-- `PatientBirthDate` → empty
-- `PatientID` → `ANON_001`
-
-Raw identified files are never committed to git. The original zip is excluded via `.gitignore`.
+The patient DICOM was anonymized before any processing (`PatientName`,
+`PatientID` → `ANON_001`; birth date cleared). Raw identified files are never
+committed; the original zip is `.gitignore`d.
 
 ---
 
 ## Reproducibility
 
-All scripts are deterministic given the same input. Model weights are versioned (TotalSegmentator v3.x, ToothFairy3 Dataset113). To reproduce exactly:
+Scripts are deterministic given the same input. Weights are versioned
+(TotalSegmentator v3.x, ToothFairy3 weights; training on ToothFairy2 Dataset112).
 
 ```bash
 docker build -t facesim .
@@ -209,23 +175,17 @@ docker run -v $(pwd)/data:/app/data facesim
 
 ---
 
-## What comes next (Phase 2)
+## References
 
-The next contributor needs to:
-
-1. Register the bone STL meshes against the soft tissue STL using ICP (Open3D)
-2. Build a tetrahedral volumetric mesh from the soft tissue surface (Gmsh or TetGen)
-3. Assign material properties (bone 15 GPa, muscle 50 kPa, fat 3 kPa, skin 200 kPa)
-4. Define bone-muscle attachment constraints and skin sliding contacts
-
-See [ROADMAP.md — Phase 2](ROADMAP.md#phase-2--hardsoft-coupling-week-2) for full task list.
+- Mollemans et al. (2007) — soft-tissue prediction benchmarks
+- Kim et al. — material properties for facial soft-tissue FEA
+- TotalSegmentator: Wasserthal et al. (2023), RSNA Radiology AI
+- ToothFairy2/3 dataset: MICCAI
+- FEBio (evaluated, not used): Maas et al. (2012), J. Biomech. Eng.
 
 ---
 
-## References
+## Team / contact
 
-- Mollemans et al. (2007) — soft tissue prediction benchmarks
-- Kim et al. — material properties for facial soft tissue FEA
-- TotalSegmentator: Wasserthal et al. (2023), RSNA Radiology AI
-- ToothFairy3 dataset: MICCAI 2025
-- FEBio: Maas et al. (2012), Journal of Biomechanical Engineering
+- Chingiz — yertaychingiz@gmail.com · tg: @povchingiz
+- Sabina — sbsqbiz@gmail.com · tg: @sab_realism

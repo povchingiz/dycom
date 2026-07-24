@@ -12,9 +12,9 @@ class Phase1Seg(Phase):
     def run(self, state, data_dir: Path) -> dict:
         import sys
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        from scripts.run_teeth_seg import segment_teeth
-        from scripts.segment_soft_tissue import segment as segment_soft
-        from scripts.masks_to_stl import nifti_to_stl
+        from segmentation.run_teeth_seg import segment_teeth
+        from segmentation.segment_soft_tissue import segment as segment_soft
+        from segmentation.masks_to_stl import nifti_to_stl
 
         nifti = data_dir / "nifti" / "patient.nii.gz"
         if not nifti.exists():

@@ -54,7 +54,7 @@ def check_torch_gpu():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", type=int, default=301)
+    ap.add_argument("--dataset", type=int, default=112)  # ToothFairy2 (matches p6_train.py DATASET_ID)
     args = ap.parse_args()
 
     print("=== SMOKE TEST ===")

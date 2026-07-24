@@ -9,14 +9,14 @@ from typing import Callable, Optional
 
 DEVICE = os.getenv("SEGMENTATION_DEVICE", "cpu")
 
-# Import functions from scripts
+# Import functions from segmentation/
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from scripts.dcm_to_nifti import convert as convert_dcm_to_nifti
-from scripts.run_teeth_seg import segment_teeth
-from scripts.segment_soft_tissue import segment as segment_soft_tissue
-from scripts.masks_to_stl import nifti_to_stl
+from segmentation.dcm_to_nifti import convert as convert_dcm_to_nifti
+from segmentation.run_teeth_seg import segment_teeth
+from segmentation.segment_soft_tissue import segment as segment_soft_tissue
+from segmentation.masks_to_stl import nifti_to_stl
 
 
 class PipelineError(Exception):

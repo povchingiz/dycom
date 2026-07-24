@@ -34,4 +34,4 @@ if torch.cuda.is_available():
     print("bf16:", torch.cuda.is_bf16_supported())
 PY
 
-echo "==> Готово. Дальше: scripts/01_prepare_data.py"
+echo "==> Готово. Дальше: make train (pipeline Phase 6) из корня репозитория."

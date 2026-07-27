@@ -66,6 +66,92 @@ TF2_LABELS = {
 }
 
 
+class _TrainProgress:
+    """Turns nnU-Net's verbose per-epoch stdout into one live progress line.
+
+    nnU-Net v2 prints, per epoch, lines like:
+        Epoch 5
+        train_loss -0.7234
+        val_loss -0.6891
+        Pseudo dice [0.89, 0.85, 0.83]
+        Epoch time: 142.31 s
+    We parse those and render a single updating line:
+        Epoch  5/1000 [██········] 0.5% | loss -0.72 | dice 0.857 | 142s/ep | ETA 39.2h
+
+    feed(line) returns True if the line was consumed into the bar (caller should
+    NOT also print it), False if it's an unrecognized line (caller prints it raw,
+    so warnings/errors/tracebacks are never swallowed).
+    """
+    import re as _re
+    _EPOCH   = _re.compile(r"^\s*Epoch\s+(\d+)\s*$")
+    _TRAIN   = _re.compile(r"train_loss[:\s]+(-?\d+\.?\d*)")
+    _VAL     = _re.compile(r"val_loss[:\s]+(-?\d+\.?\d*)")
+    _DICE    = _re.compile(r"[Pp]seudo dice[:\s]+\[([^\]]*)\]")
+    _EPTIME  = _re.compile(r"Epoch time[:\s]+([\d.]+)")
+    _TOTALEP = _re.compile(r"num_epochs[:\s]+(\d+)")
+
+    def __init__(self, total_epochs: int = 1000):
+        self.total = total_epochs
+        self.epoch = 0
+        self.train_loss = None
+        self.val_loss = None
+        self.dice = None
+        self.ep_time = None
+        self._dirty = False
+
+    def feed(self, line: str) -> bool:
+        s = line.rstrip("\n")
+
+        m = self._TOTALEP.search(s)
+        if m:
+            self.total = int(m.group(1)); return False  # let config lines print
+
+        m = self._EPOCH.match(s)
+        if m:
+            self.epoch = int(m.group(1)); self._dirty = True; self._render(); return True
+
+        m = self._TRAIN.search(s)
+        if m:
+            self.train_loss = float(m.group(1)); self._dirty = True; self._render(); return True
+
+        m = self._VAL.search(s)
+        if m:
+            self.val_loss = float(m.group(1)); self._dirty = True; self._render(); return True
+
+        m = self._DICE.search(s)
+        if m:
+            vals = [float(x) for x in m.group(1).replace(",", " ").split() if x.strip()]
+            if vals:
+                self.dice = sum(vals) / len(vals)
+            self._dirty = True; self._render(); return True
+
+        m = self._EPTIME.search(s)
+        if m:
+            self.ep_time = float(m.group(1)); self._dirty = True; self._render(); return True
+
+        return False
+
+    def _render(self):
+        pct = (self.epoch / self.total * 100) if self.total else 0
+        filled = int(pct / 10)
+        bar = "█" * filled + "·" * (10 - filled)
+        parts = [f"Epoch {self.epoch:>4}/{self.total} [{bar}] {pct:4.1f}%"]
+        if self.train_loss is not None:
+            parts.append(f"loss {self.train_loss:+.3f}")
+        if self.dice is not None:
+            parts.append(f"dice {self.dice:.3f}")
+        if self.ep_time is not None:
+            parts.append(f"{self.ep_time:.0f}s/ep")
+            remaining = (self.total - self.epoch) * self.ep_time
+            parts.append(f"ETA {remaining/3600:.1f}h")
+        # \r keeps it on one updating line; pad to clear any leftover chars.
+        print("\r" + " | ".join(parts).ljust(90), end="", flush=True)
+
+    def close(self):
+        if self._dirty:
+            print()  # move off the progress line so the final output is clean
+
+
 class Phase6Train(Phase):
     name = "phase6_ml_training"
 
@@ -374,9 +460,15 @@ class Phase6Train(Phase):
             cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
+        progress = _TrainProgress()
         for line in proc.stdout:  # type: ignore[union-attr]
-            print(line, end="", flush=True)
             tail.append(line)
+            # Feed each line to the progress tracker. If it recognizes an epoch
+            # boundary / metric, it renders a compact live bar; otherwise the raw
+            # line is printed so nothing is hidden (errors, warnings, etc.).
+            if not progress.feed(line):
+                print(line, end="", flush=True)
+        progress.close()
         proc.wait()
         return proc.returncode, "".join(tail)
 

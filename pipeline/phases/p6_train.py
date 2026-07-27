@@ -382,6 +382,33 @@ class Phase6Train(Phase):
         low = log.lower()
         return any(m.lower() in low for m in markers)
 
+    def _try_generate_resenc_plan(self, env: dict):
+        """Best-effort ResEnc plan generation across nnUNet versions.
+
+        The ResEnc planner class was renamed over nnUNet releases
+        (nnUNetPlannerResEncL / nnUNetResEncUNetLPlanner / ...), and each writes a
+        plans file whose identifier we need for `nnUNetv2_train -p <id>`. We try
+        the known (planner_class, plans_identifier) pairs; the first that exits 0
+        wins. If none work, return None and the caller uses the default plan.
+        """
+        candidates = [
+            ("nnUNetPlannerResEncL",     "nnUNetResEncUNetLPlans"),
+            ("nnUNetResEncUNetLPlanner", "nnUNetResEncUNetLPlans"),
+            ("ResEncUNetLPlanner",       "nnUNetResEncUNetLPlans"),
+        ]
+        for planner_class, plans_id in candidates:
+            print(f"[phase6/train] trying ResEnc planner: {planner_class}")
+            rc = subprocess.run(
+                ["nnUNetv2_plan_experiment", "-d", str(DATASET_ID), "-pl", planner_class],
+                env=env, capture_output=True, text=True,
+            )
+            if rc.returncode == 0:
+                print(f"[phase6/train] ResEnc plan generated → {plans_id}")
+                return plans_id
+            print(f"  {planner_class} not available in this nnUNet version")
+        print("[phase6/train] no ResEnc planner available — using default nnUNetPlans")
+        return None
+
     def _train(self, state, data_dir: Path, ds_dir: Path) -> dict:
         env = self._train_env()
 
@@ -402,21 +429,20 @@ class Phase6Train(Phase):
                 check=True, env=env,
             )
 
-        # ResEncUNetL plan (planning only — preprocessing above already produced
-        # the raw fingerprint the planner reads).
-        subprocess.run(
-            ["nnUNetv2_plan_experiment", "-d", str(DATASET_ID), "-pl", "nnUNetResEncUNetLPlanner"],
-            check=True, env=env,
-        )
+        # Try to generate a ResEncL plan (better use of the 48GB L40). This is an
+        # OPTIONAL optimization — the planner class name has changed across nnUNet
+        # versions, so we try known variants and, if none work, fall through to
+        # the default nnUNetPlans (which preprocessing already produced). A failed
+        # optional plan must never block training.
+        resenc_plan = self._try_generate_resenc_plan(env)
 
-        # Two-tier launch: the ResEncL plan sizes patch/batch for a full 48GB
-        # L40. If it OOMs anyway (fragmentation, other processes, a smaller
-        # card), fall back to the default 3d_fullres plan, which uses a smaller
-        # footprint, rather than losing the whole run.
-        attempts = [
-            ("nnUNetResEncUNetLPlans", "ResEncL (large, tuned for L40)"),
-            ("nnUNetPlans",            "default 3d_fullres (smaller footprint)"),
-        ]
+        # Launch order: ResEncL first (if we got it), then always the guaranteed
+        # default. If ResEncL OOMs on a smaller card / fragmentation, we fall back
+        # rather than losing the run.
+        attempts = []
+        if resenc_plan:
+            attempts.append((resenc_plan, "ResEncL (large, tuned for L40)"))
+        attempts.append(("nnUNetPlans", "default 3d_fullres (guaranteed plan)"))
         last_log = ""
         for plan, desc in attempts:
             print(f"[phase6/train] launching nnUNetv2_train — plan={plan} ({desc})")

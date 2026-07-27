@@ -332,21 +332,32 @@ class Phase6Train(Phase):
 
     # ── step: train ──────────────────────────────────────────────────────
 
-    def _train_env(self) -> dict:
-        """Environment hardened against OOM (both GPU VRAM and CPU/shm).
+    # Number of data-augmentation worker processes. 0 = augmentation runs in the
+    # training process itself: no forked workers, no torch shared-memory queues,
+    # and therefore NO dependency on /dev/shm. Slower per epoch, but it is the
+    # only setting that reliably survives a box with a tiny /dev/shm (this Docker
+    # container has ~64MB). Change this constant to re-enable workers once the
+    # container's /dev/shm is enlarged (e.g. docker run --shm-size=8g).
+    DA_WORKERS_DEFAULT = "0"
 
-        - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True → lets the CUDA
-          allocator grow/shrink instead of fragmenting into unusable holes;
-          this alone prevents most late-run "CUDA out of memory" crashes.
-        - nnUNet_n_proc_DA caps data-augmentation worker processes. Each worker
-          forks CPU RAM and uses /dev/shm; in the 64MB-shm Docker box too many
-          workers is the #1 cause of the loader dying mid-epoch.
-        - TORCHDYNAMO_DISABLE=1 avoids the torch.compile path (also spares the
-          extra compile-time memory spike on first batch).
+    def _train_env(self) -> dict:
+        """Environment hardened against OOM — GPU VRAM, CPU RAM, and /dev/shm.
+
+        The killer here was /dev/shm exhaustion, not VRAM:
+          RuntimeError: unable to allocate shared memory(shm) ... No space left
+        PyTorch's default 'file_descriptor' sharing strategy routes dataloader
+        tensors through /dev/shm; on a 64MB-shm box even 2 workers overflow it.
+
+        Fix: nnUNet_n_proc_DA=0 → augmentation runs in the training process, no
+        forked workers, no torch shared-memory queues → zero /dev/shm use. We
+        FORCE it (not setdefault) so a stale value in the server's .env can't
+        reintroduce the crash; override deliberately by editing DA_WORKERS_DEFAULT.
         """
         env = os.environ.copy()
+        # GPU VRAM: avoid allocator fragmentation → prevents late-run CUDA OOM.
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-        env.setdefault("nnUNet_n_proc_DA", "2")
+        # /dev/shm: the actual fix for this server. Forced, not setdefault.
+        env["nnUNet_n_proc_DA"] = self.DA_WORKERS_DEFAULT
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("TORCHDYNAMO_DISABLE", "1")
         return env
@@ -368,6 +379,15 @@ class Phase6Train(Phase):
             tail.append(line)
         proc.wait()
         return proc.returncode, "".join(tail)
+
+    @staticmethod
+    def _is_shm_error(log: str) -> bool:
+        """/dev/shm exhaustion — distinct from VRAM OOM, fixed by 0 DA workers."""
+        low = log.lower()
+        return (
+            ("shared memory" in low or "shm" in low or "bus error" in low)
+            and ("no space left" in low or "unable to allocate" in low or "bus error" in low)
+        )
 
     @staticmethod
     def _is_oom(log: str) -> bool:
@@ -454,13 +474,24 @@ class Phase6Train(Phase):
             rc, last_log = self._run_streamed(cmd, env)
             if rc == 0:
                 return {"config": "3d_fullres", "plan": plan, "fold": 0}
+
+            # /dev/shm exhaustion: retry the SAME plan with 0 DA workers, which
+            # removes shared-memory use entirely. Only retry once (guard flag).
+            if self._is_shm_error(last_log) and env.get("nnUNet_n_proc_DA") != "0":
+                print(f"[phase6/train] /dev/shm exhausted — retrying {plan} with nnUNet_n_proc_DA=0 (no workers)")
+                env = {**env, "nnUNet_n_proc_DA": "0"}
+                self._clear_cuda_cache()
+                rc, last_log = self._run_streamed(cmd, env)
+                if rc == 0:
+                    return {"config": "3d_fullres", "plan": plan, "fold": 0, "da_workers": 0}
+
             if self._is_oom(last_log):
                 print(f"[phase6/train] OOM detected with {plan} — retrying with smaller plan")
                 self._clear_cuda_cache()
                 continue
             # Non-OOM failure: don't mask it by silently downgrading.
             raise RuntimeError(
-                f"nnUNetv2_train failed (rc={rc}, plan={plan}, not an OOM).\n"
+                f"nnUNetv2_train failed (rc={rc}, plan={plan}).\n"
                 f"Last log lines:\n{last_log[-1500:]}"
             )
 

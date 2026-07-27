@@ -165,7 +165,7 @@ Target: mean Dice > 0.85. To improve: train all 5 folds or use XL plan.
 | Issue | Workaround |
 |---|---|
 | Skin STL not watertight → gmsh/FEBio fails | Replaced with Laplacian displacement |
-| Docker /dev/shm too small for PyTorch workers | `TORCHDYNAMO_DISABLE=1`, `nnUNet_n_proc_DA=2` |
+| Docker /dev/shm too small (~64MB) → training dies with "unable to allocate shared memory(shm): No space left" | `nnUNet_n_proc_DA=0` (augmentation in main process, no shm) — forced in `p6_train.py`. Note: `=2` was **not** enough. Alt: restart container with `--shm-size=8g` and re-enable workers. |
 | ToothFairy2 dataset.json has wrong numTraining (0) | `_patch_dataset_json` counts actual files |
 | ToothFairy2 labels missing "background" key | Auto-discovered from actual .mha files |
 | fast-simplification target_reduction validation | Replaced with open3d simplification |

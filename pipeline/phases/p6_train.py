@@ -83,11 +83,14 @@ class _TrainProgress:
     so warnings/errors/tracebacks are never swallowed).
     """
     import re as _re
-    _EPOCH   = _re.compile(r"^\s*Epoch\s+(\d+)\s*$")
-    _TRAIN   = _re.compile(r"train_loss[:\s]+(-?\d+\.?\d*)")
-    _VAL     = _re.compile(r"val_loss[:\s]+(-?\d+\.?\d*)")
+    # A number, optionally wrapped as np.float32(...) / np.float64(...).
+    _NUM     = _re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?")
+    _NUMCAP  = r"(?:np\.float\d*\()?(-?\d+\.?\d*)\)?"
+    _EPOCH   = _re.compile(r"(?:^|\s)Epoch\s+(\d+)\s*$")
+    _TRAIN   = _re.compile(r"train_loss[:\s]+" + _NUMCAP)
+    _VAL     = _re.compile(r"val_loss[:\s]+" + _NUMCAP)
     _DICE    = _re.compile(r"[Pp]seudo dice[:\s]+\[([^\]]*)\]")
-    _EPTIME  = _re.compile(r"Epoch time[:\s]+([\d.]+)")
+    _EPTIME  = _re.compile(r"Epoch time[:\s]+" + _NUMCAP)
     _TOTALEP = _re.compile(r"num_epochs[:\s]+(\d+)")
 
     def __init__(self, total_epochs: int = 1000):
@@ -106,7 +109,7 @@ class _TrainProgress:
         if m:
             self.total = int(m.group(1)); return False  # let config lines print
 
-        m = self._EPOCH.match(s)
+        m = self._EPOCH.search(s)
         if m:
             self.epoch = int(m.group(1)); self._dirty = True; self._render(); return True
 
@@ -120,7 +123,12 @@ class _TrainProgress:
 
         m = self._DICE.search(s)
         if m:
-            vals = [float(x) for x in m.group(1).replace(",", " ").split() if x.strip()]
+            # Some nnU-Net versions print numpy reprs, e.g.
+            # [np.float32(0.5977), np.float32(0.61)]. Strip the np.floatNN( wrapper
+            # FIRST (otherwise the "32"/"64" digits get parsed as values), then
+            # pull the actual numbers.
+            inner = self._re.sub(r"np\.float\d*\(", "(", m.group(1))
+            vals = [float(x) for x in self._NUM.findall(inner)]
             if vals:
                 self.dice = sum(vals) / len(vals)
             self._dirty = True; self._render(); return True
@@ -466,9 +474,19 @@ class Phase6Train(Phase):
             # Feed each line to the progress tracker. If it recognizes an epoch
             # boundary / metric, it renders a compact live bar; otherwise the raw
             # line is printed so nothing is hidden (errors, warnings, etc.).
-            if not progress.feed(line):
+            #
+            # CRITICAL: the progress display is cosmetic and must NEVER take down
+            # a 12h training run. Any parser failure degrades to raw printing.
+            try:
+                consumed = progress.feed(line)
+            except Exception:
+                consumed = False
+            if not consumed:
                 print(line, end="", flush=True)
-        progress.close()
+        try:
+            progress.close()
+        except Exception:
+            pass
         proc.wait()
         return proc.returncode, "".join(tail)
 

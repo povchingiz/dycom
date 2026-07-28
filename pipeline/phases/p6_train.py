@@ -434,6 +434,14 @@ class Phase6Train(Phase):
     # container's /dev/shm is enlarged (e.g. docker run --shm-size=8g).
     DA_WORKERS_DEFAULT = "0"
 
+    # Trainer variant → controls the epoch schedule. nnU-Net defaults to 1000
+    # epochs (nnUNetTrainer). On this /dev/shm-starved box each epoch is ~600s,
+    # so 1000 epochs ≈ 7 days — not viable. nnU-Net ships built-in short trainers
+    # (nnUNetTrainer_{250,500,...}epochs) that cut the schedule with no custom
+    # code. 250 epochs (~42h here) typically reaches most of the full Dice.
+    # Set to "nnUNetTrainer" for the full 1000-epoch run once the box is faster.
+    TRAINER = "nnUNetTrainer_250epochs"
+
     def _train_env(self) -> dict:
         """Environment hardened against OOM — GPU VRAM, CPU RAM, and /dev/shm.
 
@@ -489,6 +497,14 @@ class Phase6Train(Phase):
             pass
         proc.wait()
         return proc.returncode, "".join(tail)
+
+    @staticmethod
+    def _is_trainer_missing(log: str, trainer: str) -> bool:
+        """nnU-Net couldn't find the requested -tr trainer class."""
+        low = log.lower()
+        not_found = ("could not find" in low or "unable to locate" in low
+                     or "no module" in low)
+        return not_found and ("trainer" in low or trainer.lower() in low)
 
     @staticmethod
     def _is_shm_error(log: str) -> bool:
@@ -574,16 +590,31 @@ class Phase6Train(Phase):
             attempts.append((resenc_plan, "ResEncL (large, tuned for L40)"))
         attempts.append(("nnUNetPlans", "default 3d_fullres (guaranteed plan)"))
         last_log = ""
+        # Resolve the trainer once. Prefer the short-schedule trainer; if this
+        # nnU-Net build doesn't ship it, fall back to the default 1000-epoch one
+        # so training still runs (just slower). Probed on the first attempt below.
+        trainer = self.TRAINER
         for plan, desc in attempts:
-            print(f"[phase6/train] launching nnUNetv2_train — plan={plan} ({desc})")
+            print(f"[phase6/train] launching nnUNetv2_train — plan={plan}, trainer={trainer} ({desc})")
             print("[phase6/train] (streaming live; safe to detach in tmux)")
             cmd = [
                 "nnUNetv2_train", str(DATASET_ID), "3d_fullres", "0",
-                "-p", plan, "--npz", "--c",   # --c: resume from checkpoint if present
+                "-p", plan, "-tr", trainer,
+                "--npz", "--c",   # --c: resume from checkpoint if present
             ]
             rc, last_log = self._run_streamed(cmd, env)
             if rc == 0:
-                return {"config": "3d_fullres", "plan": plan, "fold": 0}
+                return {"config": "3d_fullres", "plan": plan, "fold": 0, "trainer": trainer}
+
+            # Short-schedule trainer not present in this build → retry with the
+            # default trainer (guaranteed to exist) before giving up on this plan.
+            if self._is_trainer_missing(last_log, trainer) and trainer != "nnUNetTrainer":
+                print(f"[phase6/train] trainer {trainer} not found — falling back to nnUNetTrainer (1000 epochs)")
+                trainer = "nnUNetTrainer"
+                cmd[cmd.index("-tr") + 1] = trainer
+                rc, last_log = self._run_streamed(cmd, env)
+                if rc == 0:
+                    return {"config": "3d_fullres", "plan": plan, "fold": 0, "trainer": trainer}
 
             # /dev/shm exhaustion: retry the SAME plan with 0 DA workers, which
             # removes shared-memory use entirely. Only retry once (guard flag).

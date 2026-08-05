@@ -30,12 +30,12 @@ from pipeline.phases.base import Phase
 #   TF2_CLASSES     7  → remap 48→7 grouped classes (demo). 48 → train raw as-is.
 #   TF2_MAX_CASES   60 → subset the dataset (full ToothFairy2 is ~110GB). 0 = all.
 #   TF2_CONFIG      3d_lowres → nnU-Net config (lowres = fast + low-mem for demo).
-#   TF2_HF_REPO     povchingiz/toothfairy2 → private HF source (needs HF_TOKEN).
+#   TF2_HF_REPO     povchingiz/stomato2 → HF source (HF_TOKEN needed if private).
 #   TF2_DATASET_ID  auto: 113 when remapping (7-class), 112 when raw (48-class).
 N_CLASSES = int(os.getenv("TF2_CLASSES", "7"))
 MAX_CASES = int(os.getenv("TF2_MAX_CASES", "60"))
 NNUNET_CONFIG = os.getenv("TF2_CONFIG", "3d_lowres")
-HF_REPO = os.getenv("TF2_HF_REPO", "povchingiz/toothfairy2")
+HF_REPO = os.getenv("TF2_HF_REPO", "povchingiz/stomato2")
 
 _REMAP = N_CLASSES == 7
 DATASET_ID = int(os.getenv("TF2_DATASET_ID", "113" if _REMAP else "112"))

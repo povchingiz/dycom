@@ -269,26 +269,45 @@ class Phase6Train(Phase):
         print(f"[phase6/download] listing {HF_REPO} ...")
         files = HfApi().list_repo_files(HF_REPO, repo_type="dataset", token=token)
 
-        # Case ids from label files (labelsTr/<case>.mha). Prefer 'F' cases
-        # (full 48-class annotations) over 'P' (partial) for cleaner training.
-        cases = sorted(
-            {os.path.basename(f)[:-4] for f in files
-             if f.startswith("labelsTr/") and f.endswith(".mha")},
-            key=lambda c: (0 if "F_" in c else 1, c),
-        )
-        if not cases:
+        # The repo may nest data under a dataset dir (e.g.
+        # "Dataset112_ToothFairy2/imagesTr/..."), so auto-detect the prefix from
+        # the labelsTr path rather than assuming files sit at the repo root.
+        label_files = [f for f in files
+                       if "/labelsTr/" in f or f.startswith("labelsTr/")]
+        label_files = [f for f in label_files if f.endswith(".mha")]
+        if not label_files:
+            sample = "\n  ".join(files[:15])
             raise RuntimeError(
-                f"No labelsTr/*.mha found in {HF_REPO}. "
+                f"No labelsTr/*.mha found in {HF_REPO}. First files:\n  {sample}\n"
                 "Check the repo layout / HF_TOKEN access."
             )
+        # prefix = everything before "labelsTr/" (empty if at root)
+        prefix = label_files[0].split("labelsTr/")[0]  # e.g. "Dataset112_ToothFairy2/"
+
+        # Case ids from label paths. Prefer 'F' cases (full 48-class annotations)
+        # over 'P' (partial) for cleaner training.
+        cases = sorted(
+            {os.path.basename(f)[:-4] for f in label_files},
+            key=lambda c: (0 if "F_" in c else 1, c),
+        )
         if MAX_CASES > 0:
             cases = cases[:MAX_CASES]
-        print(f"[phase6/download] fetching {len(cases)} cases from {HF_REPO}")
+        print(f"[phase6/download] prefix='{prefix}' — fetching {len(cases)} cases")
 
         for i, case in enumerate(cases, 1):
-            for rel in (f"imagesTr/{case}_0000.mha", f"labelsTr/{case}.mha"):
-                hf_hub_download(HF_REPO, rel, repo_type="dataset",
-                                local_dir=str(raw_download), token=token)
+            for rel in (f"{prefix}imagesTr/{case}_0000.mha",
+                        f"{prefix}labelsTr/{case}.mha"):
+                local = hf_hub_download(HF_REPO, rel, repo_type="dataset",
+                                        local_dir=str(raw_download), token=token)
+                # flatten: symlink/copy into raw_download/{imagesTr,labelsTr}/ so
+                # downstream (_remap_48_to_7) finds a flat layout regardless of prefix
+                sub = "imagesTr" if "imagesTr" in rel else "labelsTr"
+                dst = raw_download / sub / os.path.basename(rel)
+                if not dst.exists():
+                    try:
+                        os.symlink(local, dst)
+                    except OSError:
+                        shutil.copy(local, dst)
             if i % 10 == 0 or i == len(cases):
                 print(f"  {i}/{len(cases)}")
 

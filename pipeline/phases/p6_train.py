@@ -23,8 +23,36 @@ from pathlib import Path
 
 from pipeline.phases.base import Phase
 
-DATASET_ID = 112
-DATASET_NAME = "ToothFairy2"
+# ── run config (env-overridable so ONE codebase runs on server / 3080Ti / Colab) ─
+# All values print themselves at launch; override via env, never via input()
+# (training runs headless — a prompt would hang it).
+#
+#   TF2_CLASSES     7  → remap 48→7 grouped classes (demo). 48 → train raw as-is.
+#   TF2_MAX_CASES   60 → subset the dataset (full ToothFairy2 is ~110GB). 0 = all.
+#   TF2_CONFIG      3d_lowres → nnU-Net config (lowres = fast + low-mem for demo).
+#   TF2_HF_REPO     povchingiz/toothfairy2 → private HF source (needs HF_TOKEN).
+#   TF2_DATASET_ID  auto: 113 when remapping (7-class), 112 when raw (48-class).
+N_CLASSES = int(os.getenv("TF2_CLASSES", "7"))
+MAX_CASES = int(os.getenv("TF2_MAX_CASES", "60"))
+NNUNET_CONFIG = os.getenv("TF2_CONFIG", "3d_lowres")
+HF_REPO = os.getenv("TF2_HF_REPO", "povchingiz/toothfairy2")
+
+_REMAP = N_CLASSES == 7
+DATASET_ID = int(os.getenv("TF2_DATASET_ID", "113" if _REMAP else "112"))
+DATASET_NAME = "ToothFairy2_grouped" if _REMAP else "ToothFairy2"
+
+# 7-class grouped scheme (see remap_labels.py / project memory). Individual FDI
+# teeth (11–28 upper, 31–48 lower) collapse to upper_teeth/lower_teeth; jaws and
+# both inferior alveolar canals are kept; everything else → background.
+GROUPED_LABELS = {
+    "background": 0,
+    "mandible": 1,
+    "maxilla": 2,
+    "left_canal": 3,
+    "right_canal": 4,
+    "upper_teeth": 5,
+    "lower_teeth": 6,
+}
 
 # ToothFairy2 label map (42 classes: teeth + jaw structures)
 TF2_LABELS = {
@@ -207,111 +235,133 @@ class Phase6Train(Phase):
             result = fn(state, data_dir, ds_dir)
             self._mark_step(state, step_name, result)
 
-        return {"dataset": DATASET_ID, "name": DATASET_NAME, "config": "3d_fullres", "fold": 0}
+        return {"dataset": DATASET_ID, "name": DATASET_NAME, "config": NNUNET_CONFIG, "fold": 0}
 
     # ── step: download ───────────────────────────────────────────────────
 
     def _download(self, state, data_dir: Path, ds_dir: Path) -> dict:
-        raw_download = data_dir / "raw" / "datasets" / "toothfairy2"
+        """Download a subset of the 48-class ToothFairy2 from HF into a raw dir.
 
-        # If already in nnUNet format, skip download
+        Pulls only MAX_CASES cases (images + labels) from HF_REPO — the full set
+        is ~110GB unpacked, unusable on Colab/small disks. Downloads into a
+        "toothfairy2_raw" dir (48-class); _prepare then remaps 48→7 into ds_dir.
+        HF_TOKEN in the env is used for private repos (harmless if repo is public).
+        """
+        raw_download = data_dir / "raw" / "datasets" / "toothfairy2_raw"
+
+        # Already remapped into the target nnUNet dataset? nothing to do.
         if ds_dir.exists() and (ds_dir / "dataset.json").exists():
-            print(f"[phase6/download] dataset already in nnUNet_raw, skipping download")
+            print("[phase6/download] target dataset already present, skipping")
             return {"source": "already_present", "path": str(ds_dir)}
 
-        if raw_download.exists() and any(raw_download.rglob("*.nii.gz")):
-            print(f"[phase6/download] raw files found in {raw_download}, skipping download")
+        # Raw subset already downloaded? skip (idempotent resume).
+        existing = list((raw_download / "labelsTr").glob("*.mha")) if raw_download.exists() else []
+        if existing:
+            print(f"[phase6/download] raw subset present ({len(existing)} cases), skipping")
             return {"source": "already_present", "path": str(raw_download)}
 
-        raw_download.mkdir(parents=True, exist_ok=True)
+        (raw_download / "imagesTr").mkdir(parents=True, exist_ok=True)
+        (raw_download / "labelsTr").mkdir(parents=True, exist_ok=True)
 
-        # Try HuggingFace (several known repo names for ToothFairy2)
-        hf_candidates = [
-            "toothfairy/ToothFairy2",
-            "ditto-biomed/toothfairy2",
-            "toothfairy2/dataset",
-        ]
-        for repo_id in hf_candidates:
-            try:
-                print(f"[phase6/download] trying HuggingFace: {repo_id}")
-                from huggingface_hub import snapshot_download
-                path = snapshot_download(
-                    repo_id=repo_id,
-                    repo_type="dataset",
-                    local_dir=str(raw_download),
-                )
-                print(f"[phase6/download] HuggingFace OK: {path}")
-                return {"source": "huggingface", "repo": repo_id, "path": str(raw_download)}
-            except Exception as e:
-                print(f"  failed ({type(e).__name__})")
+        from huggingface_hub import HfApi, hf_hub_download
+        token = os.getenv("HF_TOKEN") or None
 
-        # Try Zenodo (ToothFairy2 challenge dataset)
-        zenodo_urls = [
-            "https://zenodo.org/records/8386688/files/ToothFairy2_dataset.zip",
-            "https://zenodo.org/records/11182955/files/ToothFairy2_dataset.zip",
-        ]
-        for url in zenodo_urls:
-            try:
-                print(f"[phase6/download] trying Zenodo: {url}")
-                import urllib.request, zipfile
-                zip_path = raw_download / "toothfairy2.zip"
+        print(f"[phase6/download] listing {HF_REPO} ...")
+        files = HfApi().list_repo_files(HF_REPO, repo_type="dataset", token=token)
 
-                def _progress(count, block, total):
-                    if total > 0:
-                        pct = min(count * block * 100 // total, 100)
-                        print(f"\r  {pct}%", end="", flush=True)
-
-                urllib.request.urlretrieve(url, str(zip_path), reporthook=_progress)
-                print()
-                with zipfile.ZipFile(zip_path, "r") as z:
-                    z.extractall(raw_download)
-                zip_path.unlink()
-                print(f"[phase6/download] Zenodo OK: {raw_download}")
-                return {"source": "zenodo", "path": str(raw_download)}
-            except Exception as e:
-                print(f"  failed ({type(e).__name__}: {e})")
-
-        # Manual fallback — clear instructions
-        raise RuntimeError(
-            "\n"
-            "Auto-download failed (dataset may require registration).\n"
-            "\n"
-            "Manual steps:\n"
-            "  1. Go to https://toothfairy2.grand-challenge.org/  (free registration)\n"
-            "  2. Download dataset (~15 GB)\n"
-            "  3. Extract to: data/raw/datasets/toothfairy2/\n"
-            "  4. Re-run:\n"
-            "       python pipeline/main.py --reset-phase 6\n"
-            "       python pipeline/main.py --phase 6\n"
-            "\n"
-            "Alternative: HaN-Seg (8GB, no registration, for soft tissue validation):\n"
-            "  python pipeline/main.py --download han_seg"
+        # Case ids from label files (labelsTr/<case>.mha). Prefer 'F' cases
+        # (full 48-class annotations) over 'P' (partial) for cleaner training.
+        cases = sorted(
+            {os.path.basename(f)[:-4] for f in files
+             if f.startswith("labelsTr/") and f.endswith(".mha")},
+            key=lambda c: (0 if "F_" in c else 1, c),
         )
+        if not cases:
+            raise RuntimeError(
+                f"No labelsTr/*.mha found in {HF_REPO}. "
+                "Check the repo layout / HF_TOKEN access."
+            )
+        if MAX_CASES > 0:
+            cases = cases[:MAX_CASES]
+        print(f"[phase6/download] fetching {len(cases)} cases from {HF_REPO}")
+
+        for i, case in enumerate(cases, 1):
+            for rel in (f"imagesTr/{case}_0000.mha", f"labelsTr/{case}.mha"):
+                hf_hub_download(HF_REPO, rel, repo_type="dataset",
+                                local_dir=str(raw_download), token=token)
+            if i % 10 == 0 or i == len(cases):
+                print(f"  {i}/{len(cases)}")
+
+        return {"source": "huggingface", "repo": HF_REPO, "n_cases": len(cases),
+                "path": str(raw_download)}
 
     # ── step: prepare ────────────────────────────────────────────────────
 
     def _prepare(self, state, data_dir: Path, ds_dir: Path) -> dict:
-        # Data already in nnUNet_raw (e.g. uploaded directly to server)
+        # Already prepared (e.g. server has Dataset113 built, or a resumed run).
         if (ds_dir / "imagesTr").exists() and (ds_dir / "dataset.json").exists():
-            print("[phase6/prepare] dataset already in nnUNet_raw, skipping conversion")
-            self._patch_dataset_json(ds_dir)
-            return {"ds_dir": str(ds_dir), "method": "already_in_nnunet_raw"}
+            print("[phase6/prepare] target dataset already prepared, skipping")
+            return {"ds_dir": str(ds_dir), "method": "already_present"}
 
-        raw_download = data_dir / "raw" / "datasets" / "toothfairy2"
+        raw_download = data_dir / "raw" / "datasets" / "toothfairy2_raw"
 
-        # If dataset already in nnUNet format (HF download may give this directly)
-        if (raw_download / "imagesTr").exists() and (raw_download / "dataset.json").exists():
-            print("[phase6/prepare] dataset already in nnUNet format, copying...")
-            if ds_dir.exists():
-                shutil.rmtree(ds_dir)
-            shutil.copytree(raw_download, ds_dir)
-            # Ensure dataset.json has correct ID/name
-            self._patch_dataset_json(ds_dir)
-            return {"ds_dir": str(ds_dir), "method": "copy_from_hf"}
+        if _REMAP:
+            return self._remap_48_to_7(raw_download, ds_dir)
 
-        # Otherwise convert raw NIfTI pairs to nnUNet structure
+        # 48-class path: use the raw download directly (no remap).
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
         return self._convert_to_nnunet(raw_download, ds_dir)
+
+    def _remap_48_to_7(self, raw: Path, ds_dir: Path) -> dict:
+        """Collapse the 48-class ToothFairy2 labels into the 7 grouped classes.
+
+        FDI teeth 11–28 → upper_teeth(5), 31–48 → lower_teeth(6); mandible(1),
+        maxilla(2), and both IA canals(3,4) kept; all else → background. Images
+        are copied verbatim; label geometry (spacing/origin) is preserved.
+        """
+        import numpy as np
+        import SimpleITK as sitk
+
+        lut = np.zeros(256, dtype=np.uint8)
+        lut[1] = 1; lut[2] = 2; lut[3] = 3; lut[4] = 4
+        for t in range(11, 29):
+            lut[t] = 5           # upper quadrants 1x, 2x
+        for t in range(31, 49):
+            lut[t] = 6           # lower quadrants 3x, 4x
+
+        (ds_dir / "imagesTr").mkdir(parents=True, exist_ok=True)
+        (ds_dir / "labelsTr").mkdir(parents=True, exist_ok=True)
+
+        labels = sorted((raw / "labelsTr").glob("*.mha"))
+        if not labels:
+            raise RuntimeError(f"No labels in {raw/'labelsTr'} — download step incomplete?")
+        print(f"[phase6/prepare] remapping {len(labels)} cases 48→7 classes")
+
+        n = 0
+        for i, lp in enumerate(labels, 1):
+            stem = lp.stem                                   # ToothFairy2F_001
+            img_src = raw / "imagesTr" / f"{stem}_0000.mha"
+            if not img_src.exists():
+                print(f"  !! missing image for {stem}, skipping")
+                continue
+            img = sitk.ReadImage(str(lp))
+            out = lut[sitk.GetArrayFromImage(img).astype(np.uint8)]
+            oi = sitk.GetImageFromArray(out); oi.CopyInformation(img)
+            sitk.WriteImage(oi, str(ds_dir / "labelsTr" / lp.name), useCompression=True)
+            shutil.copy(img_src, ds_dir / "imagesTr" / img_src.name)
+            n += 1
+            if i % 10 == 0 or i == len(labels):
+                print(f"  {i}/{len(labels)}")
+
+        (ds_dir / "dataset.json").write_text(json.dumps({
+            "channel_names": {"0": "CBCT"},
+            "labels": GROUPED_LABELS,
+            "numTraining": n,
+            "file_ending": ".mha",
+            "overwrite_image_reader_writer": "SimpleITKIO",
+        }, indent=2))
+        print(f"[phase6/prepare] done → {ds_dir} ({n} cases, 7 classes)")
+        return {"ds_dir": str(ds_dir), "n_cases": n, "classes": 7}
 
     def _convert_to_nnunet(self, raw: Path, ds_dir: Path) -> dict:
         import random
@@ -426,14 +476,6 @@ class Phase6Train(Phase):
 
     # ── step: train ──────────────────────────────────────────────────────
 
-    # Number of data-augmentation worker processes. 0 = augmentation runs in the
-    # training process itself: no forked workers, no torch shared-memory queues,
-    # and therefore NO dependency on /dev/shm. Slower per epoch, but it is the
-    # only setting that reliably survives a box with a tiny /dev/shm (this Docker
-    # container has ~64MB). Change this constant to re-enable workers once the
-    # container's /dev/shm is enlarged (e.g. docker run --shm-size=8g).
-    DA_WORKERS_DEFAULT = "0"
-
     # Trainer variant → controls the epoch schedule. nnU-Net defaults to 1000
     # epochs (nnUNetTrainer). On this /dev/shm-starved box each epoch is ~600s,
     # so 1000 epochs ≈ 7 days — not viable. nnU-Net ships built-in short trainers
@@ -442,24 +484,24 @@ class Phase6Train(Phase):
     # Set to "nnUNetTrainer" for the full 1000-epoch run once the box is faster.
     TRAINER = "nnUNetTrainer_250epochs"
 
+    # Data-augmentation worker processes. 0 = augmentation runs in the training
+    # process (no forked workers, no torch shm queues, no /dev/shm dependency) —
+    # required on the 64MB-shm server. On a box with real /dev/shm (3080 Ti,
+    # Colab) set nnUNet_n_proc_DA=2..4 in the env for much faster epochs.
+    DA_WORKERS_DEFAULT = "0"
+
     def _train_env(self) -> dict:
         """Environment hardened against OOM — GPU VRAM, CPU RAM, and /dev/shm.
 
-        The killer here was /dev/shm exhaustion, not VRAM:
-          RuntimeError: unable to allocate shared memory(shm) ... No space left
-        PyTorch's default 'file_descriptor' sharing strategy routes dataloader
-        tensors through /dev/shm; on a 64MB-shm box even 2 workers overflow it.
-
-        Fix: nnUNet_n_proc_DA=0 → augmentation runs in the training process, no
-        forked workers, no torch shared-memory queues → zero /dev/shm use. We
-        FORCE it (not setdefault) so a stale value in the server's .env can't
-        reintroduce the crash; override deliberately by editing DA_WORKERS_DEFAULT.
+        MALLOC_TRIM_THRESHOLD_=0 returns freed heap to the OS aggressively — the
+        48-class run was OOM-killed at ~13MB over an 8GB cgroup cap; this keeps
+        peak RSS from creeping past the limit. nnUNet_n_proc_DA defaults to 0
+        (shm-safe) but honors an explicit env override on better machines.
         """
         env = os.environ.copy()
-        # GPU VRAM: avoid allocator fragmentation → prevents late-run CUDA OOM.
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-        # /dev/shm: the actual fix for this server. Forced, not setdefault.
-        env["nnUNet_n_proc_DA"] = self.DA_WORKERS_DEFAULT
+        env.setdefault("nnUNet_n_proc_DA", self.DA_WORKERS_DEFAULT)
+        env.setdefault("MALLOC_TRIM_THRESHOLD_", "0")  # keep peak RSS under cgroup cap
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("TORCHDYNAMO_DISABLE", "1")
         return env
@@ -598,13 +640,13 @@ class Phase6Train(Phase):
             print(f"[phase6/train] launching nnUNetv2_train — plan={plan}, trainer={trainer} ({desc})")
             print("[phase6/train] (streaming live; safe to detach in tmux)")
             cmd = [
-                "nnUNetv2_train", str(DATASET_ID), "3d_fullres", "0",
+                "nnUNetv2_train", str(DATASET_ID), NNUNET_CONFIG, "0",
                 "-p", plan, "-tr", trainer,
                 "--npz", "--c",   # --c: resume from checkpoint if present
             ]
             rc, last_log = self._run_streamed(cmd, env)
             if rc == 0:
-                return {"config": "3d_fullres", "plan": plan, "fold": 0, "trainer": trainer}
+                return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "trainer": trainer}
 
             # Short-schedule trainer not present in this build → retry with the
             # default trainer (guaranteed to exist) before giving up on this plan.
@@ -614,7 +656,7 @@ class Phase6Train(Phase):
                 cmd[cmd.index("-tr") + 1] = trainer
                 rc, last_log = self._run_streamed(cmd, env)
                 if rc == 0:
-                    return {"config": "3d_fullres", "plan": plan, "fold": 0, "trainer": trainer}
+                    return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "trainer": trainer}
 
             # /dev/shm exhaustion: retry the SAME plan with 0 DA workers, which
             # removes shared-memory use entirely. Only retry once (guard flag).
@@ -624,7 +666,7 @@ class Phase6Train(Phase):
                 self._clear_cuda_cache()
                 rc, last_log = self._run_streamed(cmd, env)
                 if rc == 0:
-                    return {"config": "3d_fullres", "plan": plan, "fold": 0, "da_workers": 0}
+                    return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "da_workers": 0}
 
             if self._is_oom(last_log):
                 print(f"[phase6/train] OOM detected with {plan} — retrying with smaller plan")

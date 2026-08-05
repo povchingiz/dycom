@@ -630,10 +630,16 @@ class Phase6Train(Phase):
             print("[phase6/train] preprocessed data present, skipping plan_and_preprocess")
         else:
             print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
+            # The planner calls torch.set_num_threads(get_allowed_n_proc_DA()),
+            # which crashes on nnUNet_n_proc_DA=0 ("expects a positive integer").
+            # 0 is only valid for the training loop (in-process augmentation); the
+            # planner needs ≥1. Force a positive value here regardless of the
+            # train setting.
+            plan_env = {**env, "nnUNet_n_proc_DA": "2"}
             subprocess.run(
                 ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID),
                  "-np", "2", "--verify_dataset_integrity"],
-                check=True, env=env,
+                check=True, env=plan_env,
             )
 
         # Try to generate a ResEncL plan (better use of the 48GB L40). This is an

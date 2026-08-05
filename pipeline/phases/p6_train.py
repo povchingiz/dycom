@@ -616,6 +616,18 @@ class Phase6Train(Phase):
         print("[phase6/train] no ResEnc planner available — using default nnUNetPlans")
         return None
 
+    def _plan_configs(self, plans_identifier: str) -> list[str]:
+        """Return the config names present in a generated plans JSON (or [])."""
+        prep = Path(os.environ["nnUNet_preprocessed"])
+        ds_pattern = f"Dataset{DATASET_ID:03d}_{DATASET_NAME}"
+        pf = prep / ds_pattern / f"{plans_identifier}.json"
+        if not pf.exists():
+            return []
+        try:
+            return list(json.loads(pf.read_text()).get("configurations", {}).keys())
+        except Exception:
+            return []
+
     def _train(self, state, data_dir: Path, ds_dir: Path) -> dict:
         env = self._train_env()
 
@@ -642,20 +654,33 @@ class Phase6Train(Phase):
                 check=True, env=plan_env,
             )
 
-        # Try to generate a ResEncL plan (better use of the 48GB L40). This is an
-        # OPTIONAL optimization — the planner class name has changed across nnUNet
-        # versions, so we try known variants and, if none work, fall through to
-        # the default nnUNetPlans (which preprocessing already produced). A failed
-        # optional plan must never block training.
-        resenc_plan = self._try_generate_resenc_plan(env)
+        # Try to generate a ResEncL plan (better use of a big GPU like the L40).
+        # OPTIONAL — skipped by default because the ResEnc plan only contains
+        # 2d/3d_fullres, which clashes with our 3d_lowres config (and it's tuned
+        # for a 48GB card, not a T4). Set TF2_RESENC=1 to opt back in.
+        resenc_plan = None
+        if os.getenv("TF2_RESENC") == "1":
+            resenc_plan = self._try_generate_resenc_plan(env)
 
-        # Launch order: ResEncL first (if we got it), then always the guaranteed
+        # Resolve the config against what the plan actually contains. nnU-Net
+        # only generates 3d_lowres when the median image is large enough; for
+        # small/low-res data it may produce just ['2d', '3d_fullres']. If our
+        # requested config is absent, fall back to 3d_fullres so we still train.
+        config = NNUNET_CONFIG
+        avail = self._plan_configs("nnUNetPlans")
+        if avail and config not in avail:
+            fallback = "3d_fullres" if "3d_fullres" in avail else avail[0]
+            print(f"[phase6/train] config '{config}' not in plan "
+                  f"(available: {avail}) — using '{fallback}'")
+            config = fallback
+
+        # Launch order: ResEncL first (if enabled), then always the guaranteed
         # default. If ResEncL OOMs on a smaller card / fragmentation, we fall back
         # rather than losing the run.
         attempts = []
         if resenc_plan:
             attempts.append((resenc_plan, "ResEncL (large, tuned for L40)"))
-        attempts.append(("nnUNetPlans", "default 3d_fullres (guaranteed plan)"))
+        attempts.append(("nnUNetPlans", f"default {config} (guaranteed plan)"))
         last_log = ""
         # Resolve the trainer once. Prefer the short-schedule trainer; if this
         # nnU-Net build doesn't ship it, fall back to the default 1000-epoch one
@@ -665,13 +690,13 @@ class Phase6Train(Phase):
             print(f"[phase6/train] launching nnUNetv2_train — plan={plan}, trainer={trainer} ({desc})")
             print("[phase6/train] (streaming live; safe to detach in tmux)")
             cmd = [
-                "nnUNetv2_train", str(DATASET_ID), NNUNET_CONFIG, "0",
+                "nnUNetv2_train", str(DATASET_ID), config, "0",
                 "-p", plan, "-tr", trainer,
                 "--npz", "--c",   # --c: resume from checkpoint if present
             ]
             rc, last_log = self._run_streamed(cmd, env)
             if rc == 0:
-                return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "trainer": trainer}
+                return {"config": config, "plan": plan, "fold": 0, "trainer": trainer}
 
             # Short-schedule trainer not present in this build → retry with the
             # default trainer (guaranteed to exist) before giving up on this plan.
@@ -681,7 +706,7 @@ class Phase6Train(Phase):
                 cmd[cmd.index("-tr") + 1] = trainer
                 rc, last_log = self._run_streamed(cmd, env)
                 if rc == 0:
-                    return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "trainer": trainer}
+                    return {"config": config, "plan": plan, "fold": 0, "trainer": trainer}
 
             # /dev/shm exhaustion: retry the SAME plan with 0 DA workers, which
             # removes shared-memory use entirely. Only retry once (guard flag).
@@ -691,7 +716,7 @@ class Phase6Train(Phase):
                 self._clear_cuda_cache()
                 rc, last_log = self._run_streamed(cmd, env)
                 if rc == 0:
-                    return {"config": NNUNET_CONFIG, "plan": plan, "fold": 0, "da_workers": 0}
+                    return {"config": config, "plan": plan, "fold": 0, "da_workers": 0}
 
             if self._is_oom(last_log):
                 print(f"[phase6/train] OOM detected with {plan} — retrying with smaller plan")

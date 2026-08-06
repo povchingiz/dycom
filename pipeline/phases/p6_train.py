@@ -193,8 +193,19 @@ class Phase6Train(Phase):
 
     # ── availability ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _nnunet_cli(name: str = "nnUNetv2_train") -> str | None:
+        """Locate an nnU-Net CLI. shutil.which only checks PATH, but `make train`
+        runs `.venv312/bin/python` WITHOUT activating the venv, so the venv's bin/
+        isn't on PATH and the CLIs are invisible. Check next to the running
+        interpreter (the venv) first, then fall back to PATH."""
+        cand = Path(sys.executable).parent / name
+        if cand.exists():
+            return str(cand)
+        return shutil.which(name)
+
     def is_available(self) -> tuple[bool, str]:
-        if not shutil.which("nnUNetv2_train"):
+        if not self._nnunet_cli():
             return False, "nnU-Net not installed — run: pip install nnunetv2"
         for var in ("nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"):
             if not os.getenv(var):
@@ -606,7 +617,7 @@ class Phase6Train(Phase):
         for planner_class, plans_id in candidates:
             print(f"[phase6/train] trying ResEnc planner: {planner_class}")
             rc = subprocess.run(
-                ["nnUNetv2_plan_experiment", "-d", str(DATASET_ID), "-pl", planner_class],
+                [self._nnunet_cli("nnUNetv2_plan_experiment"), "-d", str(DATASET_ID), "-pl", planner_class],
                 env=env, capture_output=True, text=True,
             )
             if rc.returncode == 0:
@@ -649,7 +660,7 @@ class Phase6Train(Phase):
             # train setting.
             plan_env = {**env, "nnUNet_n_proc_DA": "2"}
             subprocess.run(
-                ["nnUNetv2_plan_and_preprocess", "-d", str(DATASET_ID),
+                [self._nnunet_cli("nnUNetv2_plan_and_preprocess"), "-d", str(DATASET_ID),
                  "-np", "2", "--verify_dataset_integrity"],
                 check=True, env=plan_env,
             )
@@ -690,7 +701,7 @@ class Phase6Train(Phase):
             print(f"[phase6/train] launching nnUNetv2_train — plan={plan}, trainer={trainer} ({desc})")
             print("[phase6/train] (streaming live; safe to detach in tmux)")
             cmd = [
-                "nnUNetv2_train", str(DATASET_ID), config, "0",
+                self._nnunet_cli("nnUNetv2_train"), str(DATASET_ID), config, "0",
                 "-p", plan, "-tr", trainer,
                 "--npz", "--c",   # --c: resume from checkpoint if present
             ]

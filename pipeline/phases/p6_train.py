@@ -506,13 +506,10 @@ class Phase6Train(Phase):
 
     # ── step: train ──────────────────────────────────────────────────────
 
-    # Trainer variant → controls the epoch schedule. nnU-Net defaults to 1000
-    # epochs (nnUNetTrainer). On this /dev/shm-starved box each epoch is ~600s,
-    # so 1000 epochs ≈ 7 days — not viable. nnU-Net ships built-in short trainers
-    # (nnUNetTrainer_{250,500,...}epochs) that cut the schedule with no custom
-    # code. 250 epochs (~42h here) typically reaches most of the full Dice.
-    # Set to "nnUNetTrainer" for the full 1000-epoch run once the box is faster.
-    TRAINER = "nnUNetTrainer_250epochs"
+    # Trainer variant → controls the epoch schedule. Env-overridable via
+    # TF2_TRAINER. Default is the 250-epoch short trainer (fast demo); use
+    # "nnUNetTrainer" for the full 1000-epoch run, or nnUNetTrainer_{500,...}epochs.
+    TRAINER = os.getenv("TF2_TRAINER", "nnUNetTrainer_250epochs")
 
     # Data-augmentation worker processes. 0 = augmentation runs in the training
     # process (no forked workers, no torch shm queues, no /dev/shm dependency) —

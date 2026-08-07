@@ -258,16 +258,18 @@ class Phase6Train(Phase):
         "toothfairy2_raw" dir (48-class); _prepare then remaps 48→7 into ds_dir.
         HF_TOKEN in the env is used for private repos (harmless if repo is public).
         """
-        raw_download = data_dir / "raw" / "datasets" / "toothfairy2_raw"
+        raw_download = self._raw_dir(data_dir)
 
         # Already remapped into the target nnUNet dataset? nothing to do.
         if ds_dir.exists() and (ds_dir / "dataset.json").exists():
             print("[phase6/download] target dataset already present, skipping")
             return {"source": "already_present", "path": str(ds_dir)}
 
-        # Raw subset already downloaded? skip (idempotent resume).
+        # Raw subset already downloaded? skip (idempotent resume). Only trust the
+        # cache if it has at least as many cases as we need.
         existing = list((raw_download / "labelsTr").glob("*.mha")) if raw_download.exists() else []
-        if existing:
+        need = MAX_CASES if MAX_CASES > 0 else len(existing)
+        if existing and (MAX_CASES <= 0 or len(existing) >= MAX_CASES):
             print(f"[phase6/download] raw subset present ({len(existing)} cases), skipping")
             return {"source": "already_present", "path": str(raw_download)}
 
@@ -327,20 +329,26 @@ class Phase6Train(Phase):
 
     # ── step: prepare ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _raw_dir(data_dir: Path) -> Path:
+        """Raw-download dir, keyed by case count so a 480-case run never reuses a
+        60-case cache (which would silently train on the wrong subset)."""
+        subset_tag = "all" if MAX_CASES <= 0 else str(MAX_CASES)
+        return data_dir / "raw" / "datasets" / f"toothfairy2_raw_{subset_tag}"
+
     def _prepare(self, state, data_dir: Path, ds_dir: Path) -> dict:
         # Already prepared (e.g. server has Dataset113 built, or a resumed run).
         if (ds_dir / "imagesTr").exists() and (ds_dir / "dataset.json").exists():
             print("[phase6/prepare] target dataset already prepared, skipping")
             return {"ds_dir": str(ds_dir), "method": "already_present"}
 
-        raw_download = data_dir / "raw" / "datasets" / "toothfairy2_raw"
+        raw_download = self._raw_dir(data_dir)
 
         if _REMAP:
             return self._remap_48_to_7(raw_download, ds_dir)
 
-        # 48-class path: use the raw download directly (no remap).
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        return self._convert_to_nnunet(raw_download, ds_dir)
+        # 48-class path: raw .mha files → nnU-Net dataset (no remap, just rename).
+        return self._prepare_48class(raw_download, ds_dir)
 
     def _remap_48_to_7(self, raw: Path, ds_dir: Path) -> dict:
         """Collapse the 48-class ToothFairy2 labels into the 7 grouped classes.
@@ -392,6 +400,47 @@ class Phase6Train(Phase):
         }, indent=2))
         print(f"[phase6/prepare] done → {ds_dir} ({n} cases, 7 classes)")
         return {"ds_dir": str(ds_dir), "n_cases": n, "classes": 7}
+
+    def _prepare_48class(self, raw: Path, ds_dir: Path) -> dict:
+        """48-class path: copy raw .mha images+labels verbatim into the nnU-Net
+        dataset (no remap), and declare labels 0..max found in the data."""
+        import numpy as np
+        import SimpleITK as sitk
+
+        (ds_dir / "imagesTr").mkdir(parents=True, exist_ok=True)
+        (ds_dir / "labelsTr").mkdir(parents=True, exist_ok=True)
+        labels = sorted((raw / "labelsTr").glob("*.mha"))
+        if not labels:
+            raise RuntimeError(f"No labels in {raw/'labelsTr'} — download incomplete?")
+        print(f"[phase6/prepare] preparing {len(labels)} cases (48-class, verbatim)")
+
+        n, max_label = 0, 0
+        for i, lp in enumerate(labels, 1):
+            stem = lp.stem
+            img_src = raw / "imagesTr" / f"{stem}_0000.mha"
+            if not img_src.exists():
+                print(f"  !! missing image for {stem}, skipping")
+                continue
+            arr = sitk.GetArrayFromImage(sitk.ReadImage(str(lp)))
+            max_label = max(max_label, int(arr.max()))
+            shutil.copy(lp, ds_dir / "labelsTr" / lp.name)
+            shutil.copy(img_src, ds_dir / "imagesTr" / img_src.name)
+            n += 1
+            if i % 20 == 0 or i == len(labels):
+                print(f"  {i}/{len(labels)}")
+
+        labels_map = {"background": 0}
+        for v in range(1, max_label + 1):
+            labels_map[f"label_{v:03d}"] = v
+        (ds_dir / "dataset.json").write_text(json.dumps({
+            "channel_names": {"0": "CBCT"},
+            "labels": labels_map,
+            "numTraining": n,
+            "file_ending": ".mha",
+            "overwrite_image_reader_writer": "SimpleITKIO",
+        }, indent=2))
+        print(f"[phase6/prepare] done → {ds_dir} ({n} cases, {len(labels_map)} labels)")
+        return {"ds_dir": str(ds_dir), "n_cases": n, "classes": len(labels_map)}
 
     def _convert_to_nnunet(self, raw: Path, ds_dir: Path) -> dict:
         import random
@@ -646,19 +695,22 @@ class Phase6Train(Phase):
         already_preprocessed = (prep_root / ds_pattern).exists() and any(
             (prep_root / ds_pattern).glob("nnUNetPlans*")
         )
-        if already_preprocessed:
-            print("[phase6/train] preprocessed data present, skipping plan_and_preprocess")
+        # "Preprocessed" means the actual data folder for our config exists, not
+        # just that a plan JSON was written (train needs nnUNetPlans_<config>/).
+        cfg_ready = (prep_root / ds_pattern / f"nnUNetPlans_{NNUNET_CONFIG}").exists()
+        if cfg_ready:
+            print(f"[phase6/train] preprocessed {NNUNET_CONFIG} present, skipping plan_and_preprocess")
         else:
-            print("[phase6/train] running nnUNetv2_plan_and_preprocess...")
+            print(f"[phase6/train] running nnUNetv2_plan_and_preprocess -c {NNUNET_CONFIG} ...")
             # The planner calls torch.set_num_threads(get_allowed_n_proc_DA()),
             # which crashes on nnUNet_n_proc_DA=0 ("expects a positive integer").
-            # 0 is only valid for the training loop (in-process augmentation); the
-            # planner needs ≥1. Force a positive value here regardless of the
-            # train setting.
+            # 0 is only valid for the training loop; the planner needs ≥1.
+            # -c <config> ensures the config we train on is actually preprocessed
+            # (default run may skip 3d_fullres for some data → train FileNotFound).
             plan_env = {**env, "nnUNet_n_proc_DA": "2"}
             subprocess.run(
                 [self._nnunet_cli("nnUNetv2_plan_and_preprocess"), "-d", str(DATASET_ID),
-                 "-np", "2", "--verify_dataset_integrity"],
+                 "-c", NNUNET_CONFIG, "-np", "2", "--verify_dataset_integrity"],
                 check=True, env=plan_env,
             )
 

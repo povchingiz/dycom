@@ -21,6 +21,10 @@ run() {
   echo "[queue] START $name  ($(date))"
   echo "[queue] env: $*"
   echo "=================================================="
+  # Reset phase-6 state first. The pipeline records phase6 as "complete" in the
+  # shared state file (keyed by phase name, NOT by dataset id), so without a
+  # reset every run after the first sees "already done" and exits instantly.
+  env "$@" .venv312/bin/python pipeline/main.py --reset-phase 6 >/dev/null 2>&1
   # run each override as KEY=VAL prefix to make train
   env "$@" .venv312/bin/python pipeline/main.py --phase 6 \
       2>&1 | tee "logs/queue_${name}.log"

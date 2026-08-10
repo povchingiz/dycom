@@ -1,7 +1,9 @@
 # Python 3.12 required (TotalSegmentator incompatible with 3.13/3.14)
 
 # Core medical imaging
-pydicom==2.4.4
+# dicom2nifti>=2.5 (pulled in by TotalSegmentator) imports pydicom.pixels,
+# which only exists in pydicom 3.x — the old 2.4.4 pin broke every TotalSegmentator run.
+pydicom>=3.0.0
 SimpleITK==2.3.1
 numpy>=1.26.4
 
@@ -11,6 +13,9 @@ TotalSegmentator>=2.2.0
 # Mesh processing
 scikit-image>=0.22.0
 trimesh>=4.3.2
+# trimesh.proximity / registration.icp need an R-tree to do point-to-surface
+# queries; without it Phase 5 validation raises ModuleNotFoundError at runtime.
+rtree>=1.0.0
 open3d>=0.18.0
 scipy>=1.12.0
 gmsh>=4.12.0

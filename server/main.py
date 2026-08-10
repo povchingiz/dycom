@@ -9,7 +9,7 @@ import shutil
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, status, Request, Response
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Request, Response
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,6 +71,7 @@ class SessionStatus(BaseModel):
     message: Optional[str] = None
     error: Optional[str] = None
     download_url: Optional[str] = None
+    simulation: Optional[dict] = None
 
 
 # ============== Middleware ==============
@@ -138,15 +139,32 @@ async def logout():
 
 
 @app.post("/upload")
-async def upload_scan(file: UploadFile = File(...)):
+async def upload_scan(
+    file: UploadFile = File(...),
+    advance_mm: float = Form(5.0),
+    vertical_mm: float = Form(0.0),
+    lateral_mm: float = Form(0.0),
+    pitch_deg: float = Form(0.0),
+    simulate: bool = Form(True),
+):
     """
-    Upload DICOM file and start processing pipeline.
-    Returns session_id for tracking progress.
+    Загрузка DICOM и запуск обработки.
+
+    Параметры операции (мм / градусы), задаются хирургом:
+      advance_mm   — выдвижение нижней челюсти вперёд (отрицательное = назад)
+      vertical_mm  — смещение вверх
+      lateral_mm   — смещение влево (коррекция асимметрии)
+      pitch_deg    — поворот вокруг латеральной оси, подбородок вперёд при +
+      simulate     — false = только сегментация, без прогноза лица
+
+    Возвращает session_id для отслеживания прогресса.
     """
     # Validate file
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    
+
+    scenario = validate_scenario(advance_mm, vertical_mm, lateral_mm, pitch_deg) if simulate else None
+
     # Create session
     session = create_session()
     session_dir = SESSION_DIR / session.session_id
@@ -164,7 +182,8 @@ async def upload_scan(file: UploadFile = File(...)):
         
         session.dicom_path = str(dicom_path)
         session.status = "queued"
-        
+        session.scenario = scenario
+
     except Exception as e:
         shutil.rmtree(session_dir, ignore_errors=True)
         del sessions[session.session_id]
@@ -172,8 +191,31 @@ async def upload_scan(file: UploadFile = File(...)):
     
     # Start processing in background
     asyncio.create_task(process_session(session))
-    
-    return {"session_id": session.session_id}
+
+    return {"session_id": session.session_id, "scenario": scenario}
+
+
+# Physiological limits. A 40mm "advancement" is not a surgical plan, it is a typo,
+# and it would silently produce a confident nonsense face.
+SCENARIO_LIMITS_MM = 20.0
+SCENARIO_LIMIT_DEG = 15.0
+
+
+def validate_scenario(advance_mm: float, vertical_mm: float,
+                      lateral_mm: float, pitch_deg: float) -> dict:
+    for name, value, limit in (
+        ("advance_mm", advance_mm, SCENARIO_LIMITS_MM),
+        ("vertical_mm", vertical_mm, SCENARIO_LIMITS_MM),
+        ("lateral_mm", lateral_mm, SCENARIO_LIMITS_MM),
+        ("pitch_deg", pitch_deg, SCENARIO_LIMIT_DEG),
+    ):
+        if abs(value) > limit:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name}={value} is outside the plausible range (±{limit})",
+            )
+    return {"advance_mm": advance_mm, "vertical_mm": vertical_mm,
+            "lateral_mm": lateral_mm, "pitch_deg": pitch_deg}
 
 
 async def process_session(session: Session):
@@ -187,17 +229,19 @@ async def process_session(session: Session):
     try:
         session.status = "processing"
         
-        zip_path = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             run_pipeline,
             session.session_id,
             session.dicom_path,
             session_dir,
-            progress_callback
+            progress_callback,
+            getattr(session, "scenario", None),
         )
-        
-        session.zip_path = zip_path
+
+        session.zip_path = result["zip_path"]
+        session.simulation = result["simulation"]
         session.status = "completed"
-        print(f"[{session.session_id}] Pipeline completed: {zip_path}")
+        print(f"[{session.session_id}] Pipeline completed: {session.zip_path}")
         
     except PipelineError as e:
         session.status = "failed"
@@ -222,8 +266,9 @@ async def get_status(session_id: str):
         status=session.status,
         message=None,
         error=session.error,
+        simulation=session.simulation,
     )
-    
+
     if session.status == "completed" and session.zip_path:
         response.download_url = f"/download/{session_id}"
     

@@ -15,6 +15,15 @@ const translations = {
         upload_description: "Upload a CBCT DICOM file for automatic teeth and soft tissue segmentation.",
         upload_dropzone: "Drag & drop your DICOM file here, or <strong>click to browse</strong>",
         upload_hint: "Accepted format: .dcm (max 500MB)",
+        scenario_title: "Surgical plan",
+        scenario_hint: "Mandible movement to simulate. Leave the defaults for a standard 5 mm advancement.",
+        scenario_advance: "Advancement, mm",
+        scenario_vertical: "Vertical, mm",
+        scenario_lateral: "Lateral, mm",
+        scenario_pitch: "Pitch, \u00b0",
+        scenario_simulate: "Predict the post-op face",
+        results_sim: "Predicted face:",
+        results_sim_none: "segmentation only, no prediction requested",
         processing_title: "Processing Your Scan",
         step_converting: "Converting DICOM to NIfTI...",
         step_teeth: "Segmenting teeth and jawbones...",
@@ -51,6 +60,15 @@ const translations = {
         upload_description: "Загрузите файл CBCT DICOM для автоматической сегментации зубов и мягких тканей.",
         upload_dropzone: "Перетащите файл DICOM сюда или <strong>нажмите для выбора</strong>",
         upload_hint: "Формат: .dcm (макс. 500МБ)",
+        scenario_title: "План операции",
+        scenario_hint: "Смещение нижней челюсти для моделирования. По умолчанию — выдвижение на 5 мм.",
+        scenario_advance: "Выдвижение, мм",
+        scenario_vertical: "По вертикали, мм",
+        scenario_lateral: "Вбок, мм",
+        scenario_pitch: "Наклон, \u00b0",
+        scenario_simulate: "Спрогнозировать лицо после операции",
+        results_sim: "Прогноз лица:",
+        results_sim_none: "только сегментация, прогноз не запрашивался",
         processing_title: "Обработка скана",
         step_converting: "Конвертация DICOM в NIfTI...",
         step_teeth: "Сегментация зубов и челюстей...",
@@ -87,6 +105,15 @@ const translations = {
         upload_description: "Тістер мен жұмсақ тіндерді автоматты сегментациялау үшін CBCT DICOM файлын жүктеңіз.",
         upload_dropzone: "DICOM файлын осы жерге сүйреңіз немесе <strong>таңдау үшін басыңыз</strong>",
         upload_hint: "Формат: .dcm (макс. 500МБ)",
+        scenario_title: "Операция жоспары",
+        scenario_hint: "Модельдеуге арналған төменгі жақ жылжуы. Әдепкі — 5 мм алға шығару.",
+        scenario_advance: "Алға жылжу, мм",
+        scenario_vertical: "Тігінен, мм",
+        scenario_lateral: "Бүйірге, мм",
+        scenario_pitch: "Көлбеу, \u00b0",
+        scenario_simulate: "Операциядан кейінгі бетті болжау",
+        results_sim: "Бет болжамы:",
+        results_sim_none: "тек сегментация, болжам сұралмады",
         processing_title: "Сканды өңдеу",
         step_converting: "DICOM-ды NIfTI-ге түрлендіру...",
         step_teeth: "Тістер мен жақ сүйектерін сегментациялау...",
@@ -160,6 +187,12 @@ const elements = {
 };
 
 // ============== Utility Functions ==============
+
+function t(key) {
+    return (translations[currentLang] && translations[currentLang][key])
+        || translations.en[key]
+        || key;
+}
 
 function updateTranslations() {
     const t = translations[currentLang];
@@ -245,15 +278,34 @@ async function logout() {
     await fetch('/logout', { method: 'POST' });
 }
 
+function readScenario() {
+    const num = (id, fallback) => {
+        const el = document.getElementById(id);
+        const value = el ? parseFloat(el.value) : NaN;
+        return Number.isFinite(value) ? value : fallback;
+    };
+    const toggle = document.getElementById('simulate-toggle');
+    return {
+        simulate: toggle ? toggle.checked : true,
+        advance_mm: num('advance-mm', 5),
+        vertical_mm: num('vertical-mm', 0),
+        lateral_mm: num('lateral-mm', 0),
+        pitch_deg: num('pitch-deg', 0),
+    };
+}
+
 async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
-    
+
+    const scenario = readScenario();
+    Object.entries(scenario).forEach(([key, value]) => formData.append(key, value));
+
     const response = await fetch('/upload', {
         method: 'POST',
         body: formData,
     });
-    
+
     if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail || 'Upload failed');
@@ -323,6 +375,23 @@ async function startUpload(file) {
     }
 }
 
+function renderSimulation(simulation) {
+    const el = document.getElementById('simulation-summary');
+    if (!el) return;
+    if (!simulation) {
+        el.textContent = t('results_sim_none');
+        return;
+    }
+    const s = simulation.scenario || {};
+    const plan = [
+        s.advance_mm ? `${s.advance_mm > 0 ? '+' : ''}${s.advance_mm} mm` : null,
+        s.vertical_mm ? `${s.vertical_mm > 0 ? '+' : ''}${s.vertical_mm} mm vert` : null,
+        s.lateral_mm ? `${s.lateral_mm > 0 ? '+' : ''}${s.lateral_mm} mm lat` : null,
+        s.pitch_deg ? `${s.pitch_deg > 0 ? '+' : ''}${s.pitch_deg}°` : null,
+    ].filter(Boolean).join(', ') || 'no movement';
+    el.textContent = `${plan} → max ${simulation.max_disp_mm} mm, mean ${simulation.mean_disp_mm} mm`;
+}
+
 function pollProgress() {
     if (!currentSessionId) return;
     
@@ -335,6 +404,7 @@ function pollProgress() {
                 setProgress(100, 'Complete!');
                 showSection('resultsSection');
                 elements.downloadBtn.href = status.download_url;
+                renderSimulation(status.simulation);
             } else if (status.status === 'failed') {
                 clearInterval(progressPollInterval);
                 showError(status.error || 'Processing failed');

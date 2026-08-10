@@ -2,6 +2,7 @@
 Pipeline orchestrator for FaceSim segmentation.
 Runs the 4 segmentation steps with progress callbacks and error handling.
 """
+import json
 import os
 import pathlib
 import shutil
@@ -32,7 +33,8 @@ def run_pipeline(
     dicom_path: str,
     session_dir: pathlib.Path,
     progress_callback: Optional[Callable[[str, int], None]] = None,
-) -> str:
+    scenario: Optional[dict] = None,
+) -> dict:
     """
     Run the complete segmentation pipeline.
     
@@ -41,10 +43,12 @@ def run_pipeline(
         dicom_path: Path to uploaded DICOM file
         session_dir: Session directory for outputs
         progress_callback: Optional callback function(status_message, percentage)
-    
+        scenario: Surgical plan (advance_mm / vertical_mm / lateral_mm / pitch_deg).
+                  None runs segmentation only.
+
     Returns:
-        Path to ZIP file with results
-    
+        {"zip_path": ..., "simulation": {...} | None}
+
     Raises:
         PipelineError: If any step fails
     """
@@ -102,15 +106,60 @@ def run_pipeline(
             nifti_to_stl(mask, out_path)
     except Exception as e:
         raise PipelineError("STL Generation", str(e))
-    progress("3D mesh generation complete", 85)
-    
-    # Step 5: Create ZIP archive
-    progress("Preparing download package...", 90)
+    progress("3D mesh generation complete", 80)
+
+    # Step 5: Simulate the surgery. This is the product — segmentation alone just
+    # returns meshes of the scan the user already had.
+    simulation = None
+    if scenario is not None:
+        progress("Simulating soft-tissue response...", 82)
+        try:
+            simulation = _simulate(session_dir, scenario)
+        except Exception as e:
+            raise PipelineError("Simulation", str(e))
+        progress(f"Simulation complete (max {simulation['max_disp_mm']} mm)", 88)
+
+    # Step 6: Create ZIP archive
+    progress("Preparing download package...", 92)
     zip_path = session_dir / f"results_{session_id}.zip"
     try:
-        shutil.make_archive(str(zip_path.with_suffix('')), 'zip', stl_dir)
+        # Pack the whole result set, not just stl/, so before/after meshes and the
+        # simulation summary travel with it.
+        package = session_dir / "package"
+        if package.exists():
+            shutil.rmtree(package)
+        package.mkdir()
+        shutil.copytree(stl_dir, package / "stl")
+        for extra in ("mesh", "sim"):
+            src = session_dir / extra
+            if src.exists():
+                shutil.copytree(src, package / extra)
+        if simulation is not None:
+            (package / "simulation.json").write_text(json.dumps(simulation, indent=2))
+        shutil.make_archive(str(zip_path.with_suffix('')), 'zip', package)
+        shutil.rmtree(package, ignore_errors=True)
     except Exception as e:
         raise PipelineError("ZIP Creation", str(e))
     progress("Download package ready", 100)
-    
-    return str(zip_path)
+
+    return {"zip_path": str(zip_path), "simulation": simulation}
+
+
+def _simulate(session_dir: pathlib.Path, scenario: dict) -> dict:
+    """Run Phase 3 on this session's meshes with the requested surgical plan."""
+    from pipeline.phases.p3_sim import Phase3Sim, Scenario
+
+    plan = Scenario(
+        advance_mm=float(scenario.get("advance_mm", 5.0)),
+        vertical_mm=float(scenario.get("vertical_mm", 0.0)),
+        lateral_mm=float(scenario.get("lateral_mm", 0.0)),
+        pitch_deg=float(scenario.get("pitch_deg", 0.0)),
+    )
+    result = Phase3Sim(plan).run(None, session_dir)
+    return {
+        "scenario": result["scenario"],
+        "max_disp_mm": result["max_disp_mm"],
+        "mean_disp_mm": result["mean_disp_mm"],
+        "frame": result["frame"],
+        "method": result["method"],
+    }

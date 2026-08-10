@@ -213,6 +213,52 @@ input[type="password"]:focus {
     color: var(--text-secondary);
 }
 
+/* Surgical plan */
+.scenario {
+    margin-top: 1.5rem;
+    padding: 1rem 1.25rem 1.25rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+}
+
+.scenario legend {
+    padding: 0 0.5rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.scenario .upload-hint {
+    margin-bottom: 1rem;
+}
+
+.scenario label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.9375rem;
+    color: var(--text-primary);
+}
+
+.scenario input[type="number"] {
+    width: 7rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.scenario label.checkbox {
+    justify-content: flex-start;
+    margin-top: 0.9rem;
+}
+
+.scenario label.checkbox input {
+    width: auto;
+}
+
 /* Progress */
 .progress-container {
     margin-top: 2rem;

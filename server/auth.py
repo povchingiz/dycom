@@ -21,6 +21,9 @@ class Session(BaseModel):
     zip_path: Optional[str] = None
     status: str = "created"  # created, processing, completed, failed, downloaded
     error: Optional[str] = None
+    # Surgical plan requested at upload, and the simulation summary produced for it.
+    scenario: Optional[dict] = None
+    simulation: Optional[dict] = None
 
 
 # In-memory session storage (cleaned on server restart)

@@ -69,6 +69,33 @@
                 </div>
             </div>
             
+            <fieldset class="scenario" id="scenario-fields">
+                <legend data-i18n="scenario_title">Surgical plan</legend>
+                <p class="upload-hint" data-i18n="scenario_hint">
+                    Mandible movement to simulate. Leave the defaults for a standard 5&nbsp;mm advancement.
+                </p>
+                <label>
+                    <span data-i18n="scenario_advance">Advancement, mm</span>
+                    <input type="number" id="advance-mm" value="5" step="0.5" min="-20" max="20">
+                </label>
+                <label>
+                    <span data-i18n="scenario_vertical">Vertical, mm</span>
+                    <input type="number" id="vertical-mm" value="0" step="0.5" min="-20" max="20">
+                </label>
+                <label>
+                    <span data-i18n="scenario_lateral">Lateral, mm</span>
+                    <input type="number" id="lateral-mm" value="0" step="0.5" min="-20" max="20">
+                </label>
+                <label>
+                    <span data-i18n="scenario_pitch">Pitch, °</span>
+                    <input type="number" id="pitch-deg" value="0" step="0.5" min="-15" max="15">
+                </label>
+                <label class="checkbox">
+                    <input type="checkbox" id="simulate-toggle" checked>
+                    <span data-i18n="scenario_simulate">Predict the post-op face</span>
+                </label>
+            </fieldset>
+
             <div id="upload-progress" class="progress-container" style="display: none;">
                 <div class="progress-bar">
                     <div class="progress-fill" id="progress-fill"></div>
@@ -134,6 +161,10 @@
                 <div class="info-item">
                     <span class="info-label" data-i18n="results_format">Format:</span>
                     <span class="info-value">ZIP archive</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label" data-i18n="results_sim">Predicted face:</span>
+                    <span class="info-value" id="simulation-summary"></span>
                 </div>
                 <div class="info-item">
                     <span class="info-label" data-i18n="results_session">Session ID:</span>

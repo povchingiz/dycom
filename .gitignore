@@ -15,6 +15,18 @@ data/sim/
 data/validation/
 pipeline_state.json
 
+# ── ML artifacts: reproducible from the pipeline, or on HuggingFace ─
+# .mha is ToothFairy2's format and nnU-Net's output format — hundreds of GB.
+data/**/*.mha
+data/nnunet/
+data/raw/Dataset*/
+data/raw/datasets/
+data/benchmark*/
+data/predict/
+data/hf_patient/
+testtest-model/
+logs/
+
 # ── Server session data ──────────────────────────────────────
 server/sessions/
 

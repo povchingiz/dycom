@@ -31,11 +31,22 @@ open-source, automated, and reproducible.
 | **2 — Meshing** | Open3D mesh cleanup, before/after structure | ✅ Complete |
 | **3 — Simulation** | Laplacian soft-tissue displacement propagation | ✅ Complete |
 | **4 — Render** | Before/after side-by-side render | ✅ Complete |
-| **5 — Validation** | Placeholder (real validation needs a paired post-op scan) | ✅ Complete |
+| **5 — Validation** | Surface distance vs a real post-op scan, with a do-nothing control | ✅ Implemented, ⏸ waiting on a paired scan |
 | **6 — ML training** | Train nnU-Net on ToothFairy2 to replace TotalSegmentator | 🔄 In progress |
 
-The end-to-end before/after pipeline (phases 0–5) runs today. Phase 6 is a
-segmentation-quality upgrade, not a blocker for the demo.
+The end-to-end before/after pipeline (phases 0–5) runs today.
+
+Two things worth knowing before you trust an output:
+
+- **The Phase 6 model beats the incumbent but is not wired in yet.** On 37 held-out
+  cases it scores 0.9240 mean Dice against TotalSegmentator's 0.8506, winning every
+  class. Phase 1 still calls TotalSegmentator, because the 7-class model does not
+  produce the sinuses and individual teeth that the anatomical frame is derived from.
+  Numbers and method in [ROADMAP.md](ROADMAP.md#phase-6--ml-training--model-beats-the-incumbent-integration-pending).
+- **The face prediction is calibrated, not validated.** Soft-tissue response uses
+  population-mean soft:hard ratios from the orthognathic literature. Phase 5 can
+  measure the real error the moment a paired post-op scan exists; until then no
+  number in this repo proves the predicted face is right.
 
 See [ROADMAP.md](ROADMAP.md) for full detail on each phase, decisions, and open work.
 
@@ -61,6 +72,7 @@ Large files are DVC-tracked / shared via Google Drive, not stored in git
 facesim/
 ├── pipeline/                 # Canonical orchestration — state machine, phases 1–6
 │   ├── main.py               # Entry point (make pipeline / make train / make status)
+│   ├── anatomy.py            # Derives superior/anterior/lateral from the segmentation
 │   └── phases/               # p1_seg … p6_train
 ├── segmentation/             # Segmentation helpers used by pipeline + server
 │   ├── dcm_to_nifti.py       # DICOM → NIfTI volume
@@ -68,8 +80,10 @@ facesim/
 │   ├── segment_soft_tissue.py  # Threshold-based skin/soft tissue
 │   └── masks_to_stl.py       # NIfTI masks → STL surface meshes
 ├── training/                 # Phase 6 nnU-Net training (see training/README.md)
-│   ├── scripts/              # 00_setup_env, 02_smoke_test, 04_evaluate
+│   ├── scripts/              # 00_setup_env, 02_smoke_test, 04_evaluate,
+│   │                         # 05_benchmark_vs_totalseg (ours vs the incumbent)
 │   └── configs/ · notebooks/
+├── tests/                    # selftest_phase5 — validates the validator
 ├── server/                   # FastAPI web demo (:8000)
 ├── data/                     # DVC-tracked / Google Drive (anon, nifti, seg, stl)
 ├── Makefile · Dockerfile · requirements.txt
@@ -120,9 +134,15 @@ machine: each phase records completion, auto-detects existing artifacts, and
 resumes from where it stopped. Individual phases: `python pipeline/main.py --phase N`.
 
 Under the hood, Phase 1 calls the helpers in `segmentation/` (DICOM → NIfTI →
-TotalSegmentator teeth/jaw + threshold soft tissue → STL). Phase 3 runs the
-Laplacian displacement simulation (tunables in `pipeline/phases/p3_sim.py`:
-`SCENARIO_MM`, `JAW_RADIUS_MM`, `N_ITER`).
+TotalSegmentator teeth/jaw + body-envelope soft tissue → STL). Phase 3 runs the
+simulation; the surgical plan comes from the environment, so no code edit is
+needed to change it:
+
+```bash
+FACESIM_ADVANCE_MM=8 FACESIM_PITCH_DEG=2 python pipeline/main.py --phase 3
+```
+
+Full parameter list in [ROADMAP.md](ROADMAP.md#phase-3--simulation--complete).
 
 ---
 
@@ -133,8 +153,12 @@ make run            # starts FastAPI at http://0.0.0.0:8000
 make stop           # stops it
 ```
 
-Upload a DICOM → automatic processing (10–15 min on GPU, 3–4h on CPU) → download
-a ZIP of STL files. Password-protected; EN/RU/KZ; sessions auto-clean after 7 days.
+Upload a DICOM, set the surgical plan (advancement / vertical / lateral / pitch),
+and the server segments the scan **and** predicts the post-op face. The ZIP holds
+`stl/`, `mesh/before/`, `mesh/after/`, `sim/` and `simulation.json`. Untick
+"predict the post-op face" for segmentation only. Movements are capped at ±20 mm
+and ±15°. Password-protected; EN/RU/KZ; sessions auto-clean after 7 days.
+Processing takes 10–15 min on GPU, 3–4h on CPU.
 See [DEPLOYMENT.md](DEPLOYMENT.md) for full GPU-server setup (RunPod, AWS, etc.).
 
 ---

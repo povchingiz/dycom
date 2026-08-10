@@ -1,8 +1,13 @@
 # Training — CBCT bone/teeth segmentation (nnU-Net v2)
 
-Trains nnU-Net on **ToothFairy2** (480 CBCT scans, teeth + jaw structures) to
-produce the segmentation model that replaces TotalSegmentator in Phase 1 of the
-FaceSim pipeline.
+Trains nnU-Net on **ToothFairy2** to produce the segmentation model that replaces
+TotalSegmentator in Phase 1 of the FaceSim pipeline.
+
+ToothFairy2 advertises 480 CBCT scans, but only 63 are fully annotated ("F"); the
+other 417 are partial ("P") and may be missing whole classes. Training on a case
+whose maxilla is simply unlabelled teaches the net that maxilla is background, so
+`p6_train.py` filters to cases carrying every target class — **182** of the 480.
+See [ROADMAP.md](../ROADMAP.md#phase-6--ml-training--in-progress).
 
 Orchestration lives in **`pipeline/phases/p6_train.py`** — the canonical entry
 point (checkpointed, resumable, OOM-hardened). This folder holds the standalone
@@ -21,7 +26,18 @@ make train         # pipeline Phase 6: download → prepare → smoke → train 
 and resumes from the last completed one, so re-running after an interruption is safe.
 
 Artifact = checkpoint + `metrics.json` (Dice/HD95 on held-out). Without a held-out
-metric it is not an artifact. Target: mean Dice > 0.85.
+metric it is not an artifact.
+
+**Target: beat the incumbent, not an absolute number.** TotalSegmentator scores
+0.8401 mean Dice on the same 12 held-out cases, with 0.771/0.777 on the alveolar
+canals. A model that does not clear both is not worth shipping — measure with:
+
+```bash
+python training/scripts/05_benchmark_vs_totalseg.py \
+    --raw data/raw/datasets/toothfairy2_raw_all \
+    --preds data/nnunet/results/Dataset<ID>_*/*/fold_0/validation \
+    --out data/benchmark
+```
 
 ## What p6_train.py does
 
@@ -42,7 +58,8 @@ metric it is not an artifact. Target: mean Dice > 0.85.
 - `--c` resume + live-streamed logs, so a killed 12h run isn't lost.
 
 ## Scientific loop (write these down before the run)
-1. **Hypothesis on paper**: L40S (48GB) vs the RTX 4090 (24GB) SOTA baselines.
+1. **Hypothesis on paper**: current box is an RTX 3090 (24GB); the earlier rented
+   L40S had 48GB.
    Prediction: larger patch size → more spatial context → higher Dice on large
    structures and better tooth numbering. Record expected gain *before* running.
 2. **Metric prediction**: baseline nnU-Net ResEnc ≈ 0.90–0.92 Dice (ToothFairy2
@@ -57,7 +74,9 @@ metric it is not an artifact. Target: mean Dice > 0.85.
 
 ## Hardware notes
 SOTA teams: RTX 4090 (24GB), patch 128×256×256, batch 1, nnU-Net ResEnc.
-L40S (48GB) ≈ 2× memory headroom → first meaningful ablation = larger patch/batch.
+On a 48GB card (the rented L40S) ≈ 2× memory headroom → first meaningful ablation
+= larger patch/batch. On the 24GB 3090, the first ablation that paid off was not
+memory at all: it was `nnUNet_n_proc_DA` (0 → 12), worth 3.6× wall-clock.
 
 ## Contents
 - `scripts/00_setup_env.sh` — reference env setup (Makefile `setup-gpu` is the real one)

@@ -182,7 +182,8 @@ The web demo uses TotalSegmentator. To train the replacement nnU-Net model:
 make train        # pipeline Phase 6: download → prepare → smoke → train → evaluate
 ```
 
-Run it in `tmux` — training takes ~12h on an L40S. It is OOM-hardened and resumes
+Run it in `tmux` — a 250-epoch 3d_fullres run on 182 cases takes ~4.5h on an
+RTX 3090 at 66 s/epoch. It is OOM-hardened and resumes
 from checkpoint if interrupted. See [training/README.md](training/README.md).
 
 ---

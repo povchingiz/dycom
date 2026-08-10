@@ -27,6 +27,14 @@ def hd95(pred, gt, label, spacing):
     p, g = pred == label, gt == label
     if p.sum() == 0 or g.sum() == 0:
         return None
+
+    # Считаем EDT только в bounding box объединения масок с запасом. На CBCT
+    # 409³ полнообъёмный edt для одного класса идёт ~минуту, а класс вроде
+    # нижнечелюстного канала занимает доли процента объёма — обрезка даёт тот же
+    # результат в десятки раз быстрее. Запас нужен, чтобы расстояния у границы
+    # бокса не занижались.
+    p, g = _crop_to_union(p, g, spacing)
+
     # расстояния от границы одной маски до другой
     dt_g = edt(~g, sampling=spacing)
     dt_p = edt(~p, sampling=spacing)
@@ -39,6 +47,18 @@ def hd95(pred, gt, label, spacing):
 def _erode(mask):
     from scipy.ndimage import binary_erosion
     return binary_erosion(mask)
+
+
+def _crop_to_union(p, g, spacing, margin_mm=10.0):
+    """Обрезает обе маски до общего bounding box с запасом margin_mm."""
+    idx = np.argwhere(p | g)
+    lo = idx.min(axis=0)
+    hi = idx.max(axis=0) + 1
+    pad = np.ceil(margin_mm / np.asarray(spacing, dtype=float)).astype(int)
+    lo = np.maximum(lo - pad, 0)
+    hi = np.minimum(hi + pad, np.array(p.shape))
+    sl = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    return p[sl], g[sl]
 
 
 def load_seg(path):

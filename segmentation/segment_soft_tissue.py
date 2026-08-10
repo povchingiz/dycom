@@ -1,14 +1,27 @@
 """
 Threshold-based soft tissue segmentation from CBCT.
-Skin: -700 to -200 HU  (fat/subcutaneous layer)
-Soft tissue: -200 to 200 HU
-Output: data/seg/soft/skin.nii.gz, soft_tissue.nii.gz
+
+skin.nii.gz        the body envelope: everything above the air threshold, closed,
+                   hole-filled, largest connected component only. Its outer
+                   surface IS the face — that is what Phase 3 deforms.
+soft_tissue.nii.gz muscle/glandular band (-200 to 200 HU), cleaned the same way.
+
+Why not the raw HU band: the previous version wrote `(-700 <= HU <= -200)`
+straight to disk. That is the fat/air transition shell, so the mesh built from it
+came out as ~96k disconnected speckles with 70k non-manifold edges — unusable as
+a simulation domain and the reason the skin STL was never watertight.
 """
 import argparse
+import os
 import pathlib
 import numpy as np
 import SimpleITK as sitk
 from typing import Optional, Callable
+
+# Air/tissue boundary. CBCT HU calibration drifts between scanners, so this is
+# env-overridable rather than baked in.
+AIR_HU = float(os.getenv("FACESIM_AIR_HU", "-500"))
+CLOSING_RADIUS = int(os.getenv("FACESIM_CLOSING_RADIUS", "2"))  # voxels
 
 
 def segment(
@@ -39,26 +52,46 @@ def segment(
     
     print(f"Volume shape: {arr.shape}, HU range: {arr.min():.0f}–{arr.max():.0f}")
 
-    skin = ((arr >= -700) & (arr <= -200)).astype(np.uint8)
+    skin = (arr > AIR_HU).astype(np.uint8)
     soft = ((arr > -200) & (arr <= 200)).astype(np.uint8)
 
     if progress_callback:
-        progress_callback("Saving skin mask...", 60)
-    
+        progress_callback("Cleaning masks...", 60)
+
+    voxel_cc = float(np.prod(img.GetSpacing())) / 1000.0   # mm³ → cc, per scanner
+
     for name, mask in [("skin", skin), ("soft_tissue", soft)]:
-        out_img = sitk.GetImageFromArray(mask)
+        cleaned = _largest_component(_close_and_fill(mask, img))
+        out_img = sitk.GetImageFromArray(cleaned)
         out_img.CopyInformation(img)
         path = out / f"{name}.nii.gz"
         sitk.WriteImage(out_img, str(path))
-        voxels = int(mask.sum())
-        vol_cc = voxels * (0.4 ** 3) / 1000
-        print(f"  {name}: {voxels} voxels ({vol_cc:.1f} cc) → {path}")
-        
+        voxels = int(cleaned.sum())
+        raw_voxels = int(mask.sum())
+        print(f"  {name}: {voxels} voxels ({voxels * voxel_cc:.1f} cc) → {path}"
+              f"   [raw threshold gave {raw_voxels}, cleanup kept {100 * voxels / max(raw_voxels, 1):.1f}%]")
+
         if progress_callback:
             progress_callback(f"Saved {name} mask", 80)
-    
+
     if progress_callback:
         progress_callback("Soft tissue segmentation complete", 100)
+
+
+def _close_and_fill(mask: np.ndarray, ref: "sitk.Image") -> "sitk.Image":
+    """Morphological closing (bridge scanner noise) then hole filling, so the
+    envelope is solid instead of a shell full of internal cavities."""
+    m = sitk.GetImageFromArray(mask)
+    m.CopyInformation(ref)
+    m = sitk.BinaryMorphologicalClosing(m, [CLOSING_RADIUS] * 3, sitk.sitkBall)
+    return sitk.BinaryFillhole(m)
+
+
+def _largest_component(img: "sitk.Image") -> np.ndarray:
+    """Keep only the biggest connected component — drops the speckle islands that
+    thresholding always leaves in CBCT air."""
+    cc = sitk.RelabelComponent(sitk.ConnectedComponent(img), sortByObjectSize=True)
+    return (sitk.GetArrayFromImage(cc) == 1).astype(np.uint8)
 
 
 if __name__ == "__main__":

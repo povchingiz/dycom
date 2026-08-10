@@ -49,40 +49,68 @@ def nifti_to_stl(
         arr, level=0.5, spacing=(spacing[2], spacing[1], spacing[0])
     )
 
-    # Decimation: cap at max_faces to keep files manageable
-    max_faces = 200_000
-    if len(faces) > max_faces:
+    # Marching cubes leaves a voxel-staircase surface. Taubin smoothing removes it
+    # without the volume shrinkage plain Laplacian smoothing causes — the mesh is a
+    # measurement, so shrinking it would bias every downstream distance.
+    if smooth_iter > 0:
         if progress_callback:
-            progress_callback(f"Decimating mesh ({len(faces)} → {max_faces} faces)...", 60)
-        idx = np.random.choice(len(faces), max_faces, replace=False)
-        faces = faces[idx]
+            progress_callback(f"Smoothing ({smooth_iter} iterations)...", 55)
+        verts, faces = _smooth(verts, faces, smooth_iter)
+
+    # Decimation: cap at max_faces to keep files manageable.
+    # NB: this used to be `np.random.choice(faces)` — dropping random triangles does
+    # not decimate, it punches holes. That is what made every skin STL non-watertight
+    # and broke the gmsh/FEBio path. Quadric decimation collapses edges instead, so
+    # the surface stays closed.
+    max_faces = 200_000
+    target_faces = int(min(max_faces, len(faces) * (1.0 - max(0.0, min(decimate, 0.95)))))
+    if target_faces < len(faces):
+        if progress_callback:
+            progress_callback(f"Decimating mesh ({len(faces)} → {target_faces} faces)...", 70)
+        verts, faces = _decimate(verts, faces, target_faces)
 
     if progress_callback:
-        progress_callback("Writing STL file...", 80)
-    
-    # Write ASCII STL
+        progress_callback("Writing STL file...", 85)
+
+    # Binary STL — same geometry as the old ASCII output at ~1/5 the size.
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, 'w') as f:
-        f.write(f"solid {out_path.stem}\n")
-        for tri in faces:
-            v = verts[tri]
-            n = np.cross(v[1] - v[0], v[2] - v[0])
-            norm = np.linalg.norm(n)
-            if norm > 0:
-                n = n / norm
-            f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n")
-            f.write("    outer loop\n")
-            for pt in v:
-                f.write(f"      vertex {pt[0]:.6e} {pt[1]:.6e} {pt[2]:.6e}\n")
-            f.write("    endloop\n")
-            f.write("  endfacet\n")
-        f.write(f"endsolid {out_path.stem}\n")
+    import trimesh
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    mesh.export(str(out_path))
 
     if progress_callback:
         progress_callback(f"Saved {len(faces)} faces", 100)
-    
-    print(f"  Saved: {out_path} ({len(faces)} faces)")
+
+    print(f"  Saved: {out_path} ({len(faces)} faces, watertight={mesh.is_watertight})")
     return True
+
+
+def _smooth(verts: np.ndarray, faces: np.ndarray, iterations: int):
+    """Taubin (lambda/mu) smoothing — shrink-free alternative to Laplacian."""
+    import trimesh
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    trimesh.smoothing.filter_taubin(mesh, lamb=0.5, nu=0.53, iterations=iterations)
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+
+
+def _decimate(verts: np.ndarray, faces: np.ndarray, target_faces: int):
+    """Quadric edge-collapse decimation. Preserves manifoldness; random face
+    dropping does not."""
+    target_reduction = 1.0 - (target_faces / len(faces))
+    try:
+        import fast_simplification
+        v, f = fast_simplification.simplify(
+            np.ascontiguousarray(verts, dtype=np.float32),
+            np.ascontiguousarray(faces, dtype=np.int32),
+            target_reduction,
+        )
+        return np.asarray(v, dtype=np.float64), np.asarray(f, dtype=np.int64)
+    except ImportError:
+        import open3d as o3d
+        m = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(verts), o3d.utility.Vector3iVector(faces)
+        ).simplify_quadric_decimation(int(target_faces))
+        return np.asarray(m.vertices), np.asarray(m.triangles)
 
 
 if __name__ == "__main__":

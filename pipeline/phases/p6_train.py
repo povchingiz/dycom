@@ -36,6 +36,10 @@ N_CLASSES = int(os.getenv("TF2_CLASSES", "7"))
 MAX_CASES = int(os.getenv("TF2_MAX_CASES", "60"))
 NNUNET_CONFIG = os.getenv("TF2_CONFIG", "3d_lowres")
 HF_REPO = os.getenv("TF2_HF_REPO", "povchingiz/stomato2")
+#   TF2_REQUIRE_ALL_CLASSES  1 → keep only cases annotated for every target class.
+#   ToothFairy2 ships 63 fully-annotated "F" cases and 417 partial "P" cases; a
+#   partial case with no maxilla label teaches the net that maxilla is background.
+REQUIRE_ALL_CLASSES = os.getenv("TF2_REQUIRE_ALL_CLASSES", "1") not in ("0", "false", "False")
 
 _REMAP = N_CLASSES == 7
 DATASET_ID = int(os.getenv("TF2_DATASET_ID", "113" if _REMAP else "112"))
@@ -44,6 +48,30 @@ DATASET_NAME = "ToothFairy2_grouped" if _REMAP else "ToothFairy2"
 # 7-class grouped scheme (see remap_labels.py / project memory). Individual FDI
 # teeth (11–28 upper, 31–48 lower) collapse to upper_teeth/lower_teeth; jaws and
 # both inferior alveolar canals are kept; everything else → background.
+def _dataset_case_count(ds_dir: Path) -> int:
+    """How many training images an nnU-Net dataset dir actually holds (0 if it is
+    not a dataset). Used instead of "the folder exists" so a half-built dataset
+    from a crashed run is rebuilt rather than trained on."""
+    if not (ds_dir / "dataset.json").exists():
+        return 0
+    return len(list((ds_dir / "imagesTr").glob("*.mha"))) if (ds_dir / "imagesTr").exists() else 0
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Hardlink the image into the nnU-Net dataset instead of copying it.
+
+    ToothFairy2 images are ~400MB each; at 480 cases a verbatim copy adds ~190GB
+    of duplicate data on top of the download and the preprocessed set, which is
+    what fills the disk mid-run. Images are read-only inputs, so a hardlink is
+    equivalent. Falls back to a copy across filesystems."""
+    if dst.exists():
+        return
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy(src, dst)
+
+
 GROUPED_LABELS = {
     "background": 0,
     "mandible": 1,
@@ -260,18 +288,22 @@ class Phase6Train(Phase):
         """
         raw_download = self._raw_dir(data_dir)
 
-        # Already remapped into the target nnUNet dataset? nothing to do.
-        if ds_dir.exists() and (ds_dir / "dataset.json").exists():
-            print("[phase6/download] target dataset already present, skipping")
+        # Already remapped into the target nnUNet dataset? nothing to do — but only
+        # if it holds as many cases as this run asks for. A dataset dir left over
+        # from a crashed run is not a finished dataset.
+        if _dataset_case_count(ds_dir) >= MAX_CASES > 0:
+            print(f"[phase6/download] target dataset already present "
+                  f"({_dataset_case_count(ds_dir)} cases), skipping")
             return {"source": "already_present", "path": str(ds_dir)}
 
-        # Raw subset already downloaded? skip (idempotent resume). Only trust the
-        # cache if it has at least as many cases as we need.
         existing = list((raw_download / "labelsTr").glob("*.mha")) if raw_download.exists() else []
-        need = MAX_CASES if MAX_CASES > 0 else len(existing)
-        if existing and (MAX_CASES <= 0 or len(existing) >= MAX_CASES):
+        if existing and MAX_CASES > 0 and len(existing) >= MAX_CASES:
             print(f"[phase6/download] raw subset present ({len(existing)} cases), skipping")
             return {"source": "already_present", "path": str(raw_download)}
+        # With MAX_CASES=0 ("all") the local count alone proves nothing — an
+        # interrupted download leaves a non-empty dir that used to be accepted as
+        # complete, and training then started on whatever few cases had landed.
+        # The repo listing below is the only way to know what "all" means.
 
         (raw_download / "imagesTr").mkdir(parents=True, exist_ok=True)
         (raw_download / "labelsTr").mkdir(parents=True, exist_ok=True)
@@ -303,9 +335,22 @@ class Phase6Train(Phase):
             {os.path.basename(f)[:-4] for f in label_files},
             key=lambda c: (0 if "F_" in c else 1, c),
         )
+        if REQUIRE_ALL_CLASSES:
+            cases = self._filter_fully_annotated(cases, prefix, raw_download, token)
+
         if MAX_CASES > 0:
             cases = cases[:MAX_CASES]
-        print(f"[phase6/download] prefix='{prefix}' — fetching {len(cases)} cases")
+
+        missing = [c for c in cases
+                   if not (raw_download / "labelsTr" / f"{c}.mha").exists()
+                   or not (raw_download / "imagesTr" / f"{c}_0000.mha").exists()]
+        if not missing:
+            print(f"[phase6/download] all {len(cases)} cases already local, skipping")
+            return {"source": "already_present", "n_cases": len(cases),
+                    "path": str(raw_download)}
+        print(f"[phase6/download] prefix='{prefix}' — {len(cases)} cases total, "
+              f"fetching {len(missing)} missing")
+        cases = missing
 
         for i, case in enumerate(cases, 1):
             for rel in (f"{prefix}imagesTr/{case}_0000.mha",
@@ -327,6 +372,75 @@ class Phase6Train(Phase):
         return {"source": "huggingface", "repo": HF_REPO, "n_cases": len(cases),
                 "path": str(raw_download)}
 
+    def _filter_fully_annotated(self, cases: list[str], prefix: str,
+                                raw_download: Path, token: str | None) -> list[str]:
+        """Keep only cases annotated for every class we are training on.
+
+        ToothFairy2 is not 480 equivalent scans. 63 are "F" (full annotation) and
+        417 are "P" (partial) — a P case may have the mandible and both alveolar
+        canals but no maxilla, or only a handful of teeth. nnU-Net cannot tell
+        "not annotated" from "not present", so an unlabelled maxilla is learned as
+        background and the model gets worse at the class the extra data was
+        supposed to improve.
+
+        Labels are ~10x smaller than images, so this downloads all labels first,
+        inspects them, and only then pulls images for the cases that survive.
+        Set TF2_REQUIRE_ALL_CLASSES=0 to train on everything regardless.
+        """
+        import numpy as np
+        import SimpleITK as sitk
+        from huggingface_hub import hf_hub_download
+
+        required = self._required_source_labels()
+        print(f"[phase6/filter] checking {len(cases)} label files for classes {sorted(required)} ...")
+
+        keep, dropped = [], []
+        for i, case in enumerate(cases, 1):
+            dst = raw_download / "labelsTr" / f"{case}.mha"
+            if not dst.exists():
+                local = hf_hub_download(HF_REPO, f"{prefix}labelsTr/{case}.mha",
+                                        repo_type="dataset",
+                                        local_dir=str(raw_download), token=token)
+                try:
+                    os.symlink(local, dst)
+                except OSError:
+                    shutil.copy(local, dst)
+            present = set(np.unique(sitk.GetArrayFromImage(sitk.ReadImage(str(dst)))).tolist())
+            missing_groups = [g for g, members in required.items() if not (members & present)]
+            if missing_groups:
+                dropped.append((case, missing_groups))
+            else:
+                keep.append(case)
+            if i % 25 == 0 or i == len(cases):
+                print(f"  {i}/{len(cases)}  kept={len(keep)} dropped={len(dropped)}")
+
+        print(f"[phase6/filter] {len(keep)} fully annotated, {len(dropped)} dropped")
+        for case, groups in dropped[:5]:
+            print(f"    e.g. {case}: no {', '.join(groups)}")
+        if not keep:
+            raise RuntimeError(
+                "No case carries every required class — check TF2_CLASSES or set "
+                "TF2_REQUIRE_ALL_CLASSES=0."
+            )
+        return keep
+
+    @staticmethod
+    def _required_source_labels() -> dict[str, set[int]]:
+        """Target class → the source ToothFairy2 labels that can satisfy it.
+        A case passes if at least one member of every group is present."""
+        if _REMAP:
+            return {
+                "mandible": {1},
+                "maxilla": {2},
+                "left_canal": {3},
+                "right_canal": {4},
+                "upper_teeth": set(range(11, 29)),
+                "lower_teeth": set(range(31, 49)),
+            }
+        # 48-class mode: only demand the structural classes; expecting all 32
+        # teeth in every scan would drop nearly the whole dataset.
+        return {"mandible": {1}, "maxilla": {2}, "left_canal": {3}, "right_canal": {4}}
+
     # ── step: prepare ────────────────────────────────────────────────────
 
     @staticmethod
@@ -337,12 +451,18 @@ class Phase6Train(Phase):
         return data_dir / "raw" / "datasets" / f"toothfairy2_raw_{subset_tag}"
 
     def _prepare(self, state, data_dir: Path, ds_dir: Path) -> dict:
-        # Already prepared (e.g. server has Dataset113 built, or a resumed run).
-        if (ds_dir / "imagesTr").exists() and (ds_dir / "dataset.json").exists():
-            print("[phase6/prepare] target dataset already prepared, skipping")
-            return {"ds_dir": str(ds_dir), "method": "already_present"}
-
+        # Already prepared (e.g. server has Dataset113 built, or a resumed run)?
+        # Only if it covers everything the raw dir holds — otherwise a partial
+        # dataset from an aborted run silently becomes the training set.
         raw_download = self._raw_dir(data_dir)
+        have = _dataset_case_count(ds_dir)
+        want = len(list((raw_download / "labelsTr").glob("*.mha"))) if raw_download.exists() else 0
+        if have and have >= max(want, MAX_CASES):
+            print(f"[phase6/prepare] target dataset already prepared ({have} cases), skipping")
+            return {"ds_dir": str(ds_dir), "method": "already_present", "n_cases": have}
+        if have:
+            print(f"[phase6/prepare] existing dataset has {have} cases but {max(want, MAX_CASES)} "
+                  f"expected — rebuilding")
 
         if _REMAP:
             return self._remap_48_to_7(raw_download, ds_dir)
@@ -386,7 +506,7 @@ class Phase6Train(Phase):
             out = lut[sitk.GetArrayFromImage(img).astype(np.uint8)]
             oi = sitk.GetImageFromArray(out); oi.CopyInformation(img)
             sitk.WriteImage(oi, str(ds_dir / "labelsTr" / lp.name), useCompression=True)
-            shutil.copy(img_src, ds_dir / "imagesTr" / img_src.name)
+            _link_or_copy(img_src, ds_dir / "imagesTr" / img_src.name)
             n += 1
             if i % 10 == 0 or i == len(labels):
                 print(f"  {i}/{len(labels)}")
@@ -423,8 +543,8 @@ class Phase6Train(Phase):
                 continue
             arr = sitk.GetArrayFromImage(sitk.ReadImage(str(lp)))
             max_label = max(max_label, int(arr.max()))
-            shutil.copy(lp, ds_dir / "labelsTr" / lp.name)
-            shutil.copy(img_src, ds_dir / "imagesTr" / img_src.name)
+            _link_or_copy(lp, ds_dir / "labelsTr" / lp.name)
+            _link_or_copy(img_src, ds_dir / "imagesTr" / img_src.name)
             n += 1
             if i % 20 == 0 or i == len(labels):
                 print(f"  {i}/{len(labels)}")
@@ -560,11 +680,38 @@ class Phase6Train(Phase):
     # "nnUNetTrainer" for the full 1000-epoch run, or nnUNetTrainer_{500,...}epochs.
     TRAINER = os.getenv("TF2_TRAINER", "nnUNetTrainer_250epochs")
 
-    # Data-augmentation worker processes. 0 = augmentation runs in the training
-    # process (no forked workers, no torch shm queues, no /dev/shm dependency) —
-    # required on the 64MB-shm server. On a box with real /dev/shm (3080 Ti,
-    # Colab) set nnUNet_n_proc_DA=2..4 in the env for much faster epochs.
-    DA_WORKERS_DEFAULT = "0"
+    # Data-augmentation worker processes. 0 means augmentation runs inside the
+    # training process: no forked workers, no torch shm queues, no /dev/shm
+    # dependency — the only thing that worked on the 64MB-shm Docker server.
+    # It is also brutally slow: single-threaded CPU augmentation starves the GPU,
+    # which then idles ~80% of every epoch. Pick from the machine instead of
+    # hardcoding the worst case; an explicit nnUNet_n_proc_DA still wins, and
+    # _is_shm_error() retries with 0 if the guess turns out to be wrong.
+    SHM_PER_WORKER_MB = 512
+    MAX_DA_WORKERS = 12
+
+    @classmethod
+    def _default_da_workers(cls) -> str:
+        try:
+            shm = shutil.disk_usage("/dev/shm")
+        except OSError:
+            return "0"
+        by_shm = int(shm.free / (cls.SHM_PER_WORKER_MB * 1024 * 1024))
+        by_cpu = max(1, (os.cpu_count() or 2) - 4)
+        workers = max(0, min(by_shm, by_cpu, cls.MAX_DA_WORKERS))
+        # Below ~2 workers the fork overhead is not worth it — stay in-process.
+        return str(workers if workers >= 2 else 0)
+
+    @staticmethod
+    def _trainer_epochs(trainer: str) -> int:
+        """Epoch budget encoded in the trainer class name.
+
+        nnU-Net's variants are named nnUNetTrainer_{N}epochs; plain nnUNetTrainer
+        is 1000. Without this the progress bar renders every run against 1000 and
+        a 250-epoch job reports 4x its real ETA."""
+        import re
+        match = re.search(r"_(\d+)epochs", trainer)
+        return int(match.group(1)) if match else 1000
 
     def _train_env(self) -> dict:
         """Environment hardened against OOM — GPU VRAM, CPU RAM, and /dev/shm.
@@ -576,13 +723,18 @@ class Phase6Train(Phase):
         """
         env = os.environ.copy()
         env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-        env.setdefault("nnUNet_n_proc_DA", self.DA_WORKERS_DEFAULT)
+        env.setdefault("nnUNet_n_proc_DA", self._default_da_workers())
         env.setdefault("MALLOC_TRIM_THRESHOLD_", "0")  # keep peak RSS under cgroup cap
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("TORCHDYNAMO_DISABLE", "1")
+        # nnUNetv2_train is a separate Python process writing into our pipe, so it
+        # block-buffers its stdout: the live progress bar arrives in 8KB bursts,
+        # minutes apart, and a killed run loses whatever was still buffered.
+        env.setdefault("PYTHONUNBUFFERED", "1")
         return env
 
-    def _run_streamed(self, cmd: list[str], env: dict) -> tuple[int, str]:
+    def _run_streamed(self, cmd: list[str], env: dict,
+                      total_epochs: int = 1000) -> tuple[int, str]:
         """Run a long command, streaming output live AND capturing tail.
 
         Live streaming matters for a 12h run — buffered output would be lost
@@ -594,7 +746,7 @@ class Phase6Train(Phase):
             cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
-        progress = _TrainProgress()
+        progress = _TrainProgress(total_epochs)
         for line in proc.stdout:  # type: ignore[union-attr]
             tail.append(line)
             # Feed each line to the progress tracker. If it recognizes an epoch
@@ -754,7 +906,7 @@ class Phase6Train(Phase):
                 "-p", plan, "-tr", trainer,
                 "--npz", "--c",   # --c: resume from checkpoint if present
             ]
-            rc, last_log = self._run_streamed(cmd, env)
+            rc, last_log = self._run_streamed(cmd, env, self._trainer_epochs(trainer))
             if rc == 0:
                 return {"config": config, "plan": plan, "fold": 0, "trainer": trainer}
 
@@ -764,7 +916,7 @@ class Phase6Train(Phase):
                 print(f"[phase6/train] trainer {trainer} not found — falling back to nnUNetTrainer (1000 epochs)")
                 trainer = "nnUNetTrainer"
                 cmd[cmd.index("-tr") + 1] = trainer
-                rc, last_log = self._run_streamed(cmd, env)
+                rc, last_log = self._run_streamed(cmd, env, self._trainer_epochs(trainer))
                 if rc == 0:
                     return {"config": config, "plan": plan, "fold": 0, "trainer": trainer}
 
@@ -774,7 +926,7 @@ class Phase6Train(Phase):
                 print(f"[phase6/train] /dev/shm exhausted — retrying {plan} with nnUNet_n_proc_DA=0 (no workers)")
                 env = {**env, "nnUNet_n_proc_DA": "0"}
                 self._clear_cuda_cache()
-                rc, last_log = self._run_streamed(cmd, env)
+                rc, last_log = self._run_streamed(cmd, env, self._trainer_epochs(trainer))
                 if rc == 0:
                     return {"config": config, "plan": plan, "fold": 0, "da_workers": 0}
 

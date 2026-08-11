@@ -40,6 +40,7 @@ import json
 import os
 import sys
 import time
+import pathlib
 from pathlib import Path
 
 import numpy as np
@@ -115,6 +116,27 @@ def repack_one(src: Path, dst: Path, is_label: bool) -> tuple[int, int, float]:
 
     tmp.replace(dst)
     return src.stat().st_size, dst.stat().st_size, err
+
+
+def _ensure_lfs_rule(api, repo: str, pattern: str = "*.mha") -> None:
+    """Гарантирует, что .gitattributes в репозитории отправляет pattern в LFS."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError
+
+    rule = f"{pattern} filter=lfs diff=lfs merge=lfs -text"
+    try:
+        current = pathlib.Path(hf_hub_download(
+            repo, ".gitattributes", repo_type="dataset")).read_text()
+    except (EntryNotFoundError, OSError):
+        current = ""
+    if rule in current:
+        return
+    api.upload_file(
+        path_or_fileobj=(current.rstrip("\n") + "\n" + rule + "\n").lstrip("\n").encode(),
+        path_in_repo=".gitattributes", repo_id=repo, repo_type="dataset",
+        commit_message=f"Track {pattern} with LFS — plain binary pushes are rejected",
+    )
+    print(f"[repack] в .gitattributes добавлено правило LFS для {pattern}", flush=True)
 
 
 def main() -> int:
@@ -201,6 +223,10 @@ def main() -> int:
         from huggingface_hub import HfApi
         api = HfApi()
         api.create_repo(args.upload, repo_type="dataset", private=True, exist_ok=True)
+        # Без явного правила HF отклоняет .mha как «просто бинарник»:
+        # "Your push was rejected because it contains binary files."
+        # Датасет при этом заливается частично — 741 файл из 961, и молча.
+        _ensure_lfs_rule(api, args.upload)
         print(f"[repack] заливаю в {args.upload} (приватный) ...", flush=True)
         url = api.upload_folder(folder_path=str(args.out), repo_id=args.upload,
                                 repo_type="dataset",
